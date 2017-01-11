@@ -17,6 +17,7 @@ from contextlib import contextmanager
 import logging
 import multiprocessing
 import os
+import sys
 import subprocess
 import time
 import math
@@ -60,8 +61,8 @@ class SingleMachineBatchSystem(BatchSystemSupport):
     physicalMemory = toil.physicalMemory()
 
     def __init__(self, config, maxCores, maxMemory, maxDisk):
-        if maxCores > self.numCores:
-            log.warn('Limiting maxCores to CPU count of system (%i).', self.numCores)
+        if maxCores == sys.maxint:
+            log.warn('Setting default maxCores to CPU count of system (%i).', self.numCores)
             maxCores = self.numCores
         if maxMemory > self.physicalMemory:
             log.warn('Limiting maxMemory to physically available memory (%i).', self.physicalMemory)
