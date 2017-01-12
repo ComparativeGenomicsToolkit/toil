@@ -52,7 +52,7 @@ def _getCurrentAWSZone(spotBid=None, nodeType=None, ctx=None):
                 zone += 'a'  # derive an availability zone in the region
         if not zone:
             try:
-                zone = get_instance_metadata()['placement']['availability-zone']
+                zone = get_instance_metadata(timeout=1, num_retries=1)['placement']['availability-zone']
             except KeyError:
                 pass
     return zone
