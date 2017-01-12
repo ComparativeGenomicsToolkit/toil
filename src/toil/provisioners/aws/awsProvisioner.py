@@ -48,7 +48,7 @@ class AWSProvisioner(AbstractProvisioner):
         super(AWSProvisioner, self).__init__(config, batchSystem)
         self.instanceMetaData = get_instance_metadata()
         self.clusterName = self.instanceMetaData['security-groups']
-        self.ctx = self._buildContext(clusterName=self.clusterName)
+        self.ctx = self._buildContext(clusterName=self.clusterName, zone=config.zone)
         self.spotBid = None
         assert config.preemptableNodeType or config.nodeType
         if config.preemptableNodeType is not None:
@@ -364,7 +364,7 @@ class AWSProvisioner(AbstractProvisioner):
                                        tags={'clusterName': clusterName},
                                        spec=kwargs,
                                        num_instances=1))
-        return cls._getLeader(clusterName=clusterName, wait=True)
+        return cls._getLeader(clusterName=clusterName, wait=True, zone=zone)
 
     @classmethod
     def destroyCluster(cls, clusterName, zone=None):
