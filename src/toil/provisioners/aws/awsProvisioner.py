@@ -14,6 +14,7 @@
 from builtins import str
 from builtins import range
 import logging
+
 import time
 import subprocess
 import sys
@@ -73,10 +74,10 @@ class AWSProvisioner(AbstractProvisioner):
         if config:
             self.instanceMetaData = get_instance_metadata()
             self.clusterName = self._getClusterNameFromTags(self.instanceMetaData)
-            self.ctx = self._buildContext(clusterName=self.clusterName)
+            self.ctx = self._buildContext(clusterName=self.clusterName, zone=config.zone)
             self.leaderIP = self.instanceMetaData['local-ipv4']  # this is PRIVATE IP
             self.keyName = list(self.instanceMetaData['public-keys'].keys())[0]
-            self.tags = self._getLeader(self.clusterName).tags
+            self.tags = self._getLeader(self.clusterName, zone=config.zone).tags
             self.masterPublicKey = self._setSSH()
             self.nodeStorage = config.nodeStorage
             spotBids = []
