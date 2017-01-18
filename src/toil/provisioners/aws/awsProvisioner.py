@@ -74,7 +74,7 @@ class AWSProvisioner(AbstractProvisioner):
         if config:
             self.instanceMetaData = get_instance_metadata()
             self.clusterName = self._getClusterNameFromTags(self.instanceMetaData)
-            self.ctx = self._buildContext(clusterName=self.clusterName, zone=config.zone)
+            self.ctx = self._buildContext(clusterName=self.clusterName)
             self.leaderIP = self.instanceMetaData['local-ipv4']  # this is PRIVATE IP
             self.keyName = list(self.instanceMetaData['public-keys'].keys())[0]
             self.tags = self._getLeader(self.clusterName, zone=config.zone).tags
@@ -693,7 +693,7 @@ class AWSProvisioner(AbstractProvisioner):
 
         for attempt in retry(delays=truncExpBackoff(), predicate=throttleError):
             with attempt:
-                roleName = 'toil'
+                roleName = 'forked-toil'
                 policy = dict(iam_full=iamFullPolicy, ec2_full=ec2FullPolicy,
                               s3_full=s3FullPolicy, sbd_full=sdbFullPolicy)
                 iamRoleName = ctx.setup_iam_ec2_role(role_name=roleName, policies=policy)
