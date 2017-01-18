@@ -221,6 +221,7 @@ ifdef BUILD_NUMBER
 	$(call tag_docker,$(docker_image):$(docker_tag),$(docker_image):$(docker_short_tag))
 	$(call tag_docker,$(docker_image):$(docker_tag),$(docker_image):$(docker_minimal_tag))
 endif
+	$(call tag_docker,$(docker_image):$(docker_tag),$(docker_image):latest)
 
 docker/$(sdist_name): dist/$(sdist_name)
 	cp $< $@
@@ -244,6 +245,7 @@ push_docker: docker check_docker_registry
 	for i in $$(seq 1 5); do docker push $(grafana_image):$(docker_tag) && break || sleep 60; done
 	for i in $$(seq 1 5); do docker push $(prometheus_image):$(docker_tag) && break || sleep 60; done
 	for i in $$(seq 1 5); do docker push $(mtail_image):$(docker_tag) && break || sleep 60; done
+	docker push $(docker_image):latest
 
 else
 

@@ -120,6 +120,19 @@ print(heredoc('''
     RUN pip install {sdistName}[aws,mesos,encryption,cwl]
     RUN rm {sdistName}
 
+    # for prometheus metrics
+    RUN wget https://joel.armstro.ng/mtail
+    RUN wget https://joel.armstro.ng/toil.mtail
+    RUN chmod +x mtail
+    RUN wget https://joel.armstro.ng/mesos-exporter
+    RUN chmod +x mesos-exporter
+
+    # for cactus
+    RUN virtualenv --system-site-packages /venv
+    RUN apt update && apt install -y git
+    RUN git clone https://github.com/comparativegenomicstoolkit/cactus.git
+    RUN bash -c 'source /venv/bin/activate && cd cactus && git checkout toil-docker && pip install .'
+
     # We intentionally inherit the default ENTRYPOINT and CMD from the base image, to the effect
     # that the running appliance just gives you a shell. To start the Mesos master or slave
     # daemons, the user # should override the entrypoint via --entrypoint.

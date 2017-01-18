@@ -93,7 +93,7 @@ def dockerMinimalTag():
     return distVersion()
 
 
-dockerRegistry = 'quay.io/ucsc_cgl'
+dockerRegistry = 'quay.io/joelarmstrong'
 
 dockerName = 'toil'
 
