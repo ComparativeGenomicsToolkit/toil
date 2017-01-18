@@ -169,6 +169,7 @@ ifdef BUILD_NUMBER
 	$(call tag_docker,$(docker_image):$(docker_tag),$(docker_image):$(docker_short_tag))
 	$(call tag_docker,$(docker_image):$(docker_tag),$(docker_image):$(docker_minimal_tag))
 endif
+	$(call tag_docker,$(docker_image):$(docker_tag),$(docker_image):latest)
 
 docker/$(sdist_name): dist/$(sdist_name)
 	cp $< $@
@@ -189,6 +190,7 @@ obliterate_docker: clean_docker
 
 push_docker: docker check_docker_registry
 	docker push $(docker_image):$(docker_tag)
+	docker push $(docker_image):latest
 
 else
 
