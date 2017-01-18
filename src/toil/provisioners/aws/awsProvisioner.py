@@ -48,7 +48,7 @@ class AWSProvisioner(AbstractProvisioner):
         super(AWSProvisioner, self).__init__(config, batchSystem)
         self.instanceMetaData = get_instance_metadata()
         self.clusterName = self.instanceMetaData['security-groups']
-        self.ctx = self._buildContext(clusterName=self.clusterName, zone=config.zone)
+        self.ctx = self._buildContext(clusterName=self.clusterName)
         self.spotBid = None
         assert config.preemptableNodeType or config.nodeType
         if config.preemptableNodeType is not None:
@@ -595,7 +595,7 @@ class AWSProvisioner(AbstractProvisioner):
     def _getProfileARN(cls, ctx):
         def addRoleErrors(e):
             return e.status == 404
-        roleName = '-toil'
+        roleName = 'forked-toil'
         policy = dict(iam_full=iamFullPolicy, ec2_full=ec2FullPolicy,
                       s3_full=s3FullPolicy, sbd_full=sdbFullPolicy)
         iamRoleName = ctx.setup_iam_ec2_role(role_name=roleName, policies=policy)
