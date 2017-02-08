@@ -28,13 +28,6 @@ def main():
     parser = addBasicProvisionerOptions(parser)
     config = parseBasicOptions(parser)
     setLoggingFromOptions(config)
-    if config.provisioner == 'aws':
-        logger.info('Using aws provisioner.')
-        try:
-            from toil.provisioners.aws.awsProvisioner import AWSProvisioner
-        except ImportError:
-            raise RuntimeError('The aws extra must be installed to use this provisioner')
-        provisioner = AWSProvisioner
-    else:
-        assert False
-    provisioner.destroyCluster(config.clusterName, zone=config.zone)
+    cluster = Cluster(provisioner=config.provisioner,
+                      clusterName=config.clusterName, zone=config.zone)
+    cluster.destroyCluster()

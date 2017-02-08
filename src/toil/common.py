@@ -359,7 +359,7 @@ def _addOptions(addGroupFn, config):
                              "in an autoscaled cluster, as well as parameters to control the "
                              "level of provisioning.")
 
-    addOptionFn("--provisioner", dest="provisioner", choices=['cgcloud', 'aws'],
+    addOptionFn("--provisioner", dest="provisioner", choices=['aws'],
                 help="The provisioner for cluster auto-scaling. The currently supported choices are"
                      "'cgcloud' or 'aws'. The default is %s." % config.provisioner)
 
@@ -704,10 +704,6 @@ class Toil(object):
     def _setProvisioner(self):
         if self.config.provisioner is None:
             self._provisioner = None
-        elif self.config.provisioner == 'cgcloud':
-            logger.info('Using cgcloud provisioner.')
-            from toil.provisioners.cgcloud.provisioner import CGCloudProvisioner
-            self._provisioner = CGCloudProvisioner(self.config, self._batchSystem)
         elif self.config.provisioner == 'aws':
             logger.info('Using AWS provisioner.')
             from bd2k.util.ec2.credentials import enable_metadata_credential_caching
@@ -795,8 +791,8 @@ class Toil(object):
             batchSystemClass = SingleMachineBatchSystem
 
         elif config.batchSystem == 'gridengine' or config.batchSystem == 'gridEngine':
-            from toil.batchSystems.gridengine import GridengineBatchSystem
-            batchSystemClass = GridengineBatchSystem
+            from toil.batchSystems.gridengine import GridEngineBatchSystem
+            batchSystemClass = GridEngineBatchSystem
 
         elif config.batchSystem == 'lsf' or config.batchSystem == 'LSF':
             from toil.batchSystems.lsf import LSFBatchSystem
@@ -811,6 +807,10 @@ class Toil(object):
         elif config.batchSystem == 'slurm' or config.batchSystem == 'Slurm':
             from toil.batchSystems.slurm import SlurmBatchSystem
             batchSystemClass = SlurmBatchSystem
+
+        elif config.batchSystem == 'torque' or config.batchSystem == 'Torque':
+            from toil.batchSystems.torque import TorqueBatchSystem
+            batchSystemClass = TorqueBatchSystem
 
         else:
             raise RuntimeError('Unrecognised batch system: %s' % config.batchSystem)
@@ -1092,3 +1092,18 @@ def getDirSizeRecursively(dirPath):
                 folderSize += fileStats.st_blocks * unixBlockSize
         totalSize += folderSize
     return totalSize
+
+
+def getFileSystemSize(dirPath):
+    """
+    Return the free space, and total size of the file system hosting `dirPath`.
+
+    :param str dirPath: A valid path to a directory.
+    :return: free space and total size of file system
+    :rtype: tuple
+    """
+    assert os.path.exists(dirPath)
+    diskStats = os.statvfs(dirPath)
+    freeSpace = diskStats.f_frsize * diskStats.f_bavail
+    diskSize = diskStats.f_frsize * diskStats.f_blocks
+    return freeSpace, diskSize

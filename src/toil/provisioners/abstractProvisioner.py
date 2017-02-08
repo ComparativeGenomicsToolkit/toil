@@ -14,7 +14,6 @@
 import json
 import logging
 import os
-import threading
 from abc import ABCMeta, abstractmethod
 
 from collections import namedtuple
@@ -100,13 +99,15 @@ class AbstractProvisioner(object):
 
     def _gatherStats(self, preemptable):
         def toDict(nodeInfo):
-            # namedtuples don't retain attribute names when dumped to JSON.
-            # convert them to dicts instead to improve stats output. Also add
-            # time.
-            return dict(memory=nodeInfo.memory,
-                        cores=nodeInfo.cores,
+            # convert NodeInfo object to dict to improve JSON output
+            return dict(memory=nodeInfo.memoryUsed,
+                        cores=nodeInfo.coresUsed,
+                        memoryTotal=nodeInfo.memoryTotal,
+                        coresTotal=nodeInfo.coresTotal,
+                        requestedCores=nodeInfo.requestedCores,
+                        requestedMemory=nodeInfo.requestedMemory,
                         workers=nodeInfo.workers,
-                        time=time.time()
+                        time=time.time()  # add time stamp
                         )
         if self.scaleable:
             stats = {}
@@ -195,28 +196,31 @@ class AbstractProvisioner(object):
             nodesToTerminate.sort(key=lambda (instance, nodeInfo): (
                 nodeInfo.workers if nodeInfo else 1,
                 self._remainingBillingInterval(instance)))
+            if not force:
+                # don't terminate nodes that still have > 15% left in their allocated (prepaid) time
+                nodesToTerminate = [nodeTuple for nodeTuple in nodesToTerminate if self._remainingBillingInterval(nodeTuple[0]) <= 0.15]
             nodesToTerminate = nodesToTerminate[:numNodes]
             if log.isEnabledFor(logging.DEBUG):
                 for instance, nodeInfo in nodesToTerminate:
                     log.debug("Instance %s is about to be terminated. Its node info is %r. It "
                               "would be billed again in %s minutes.", instance.id, nodeInfo,
                               60 * self._remainingBillingInterval(instance))
-            instanceIds = [instance.id for instance, nodeInfo in nodesToTerminate]
+            instances = [instance for instance, nodeInfo in nodesToTerminate]
         else:
             # Without load info all we can do is sort instances by time left in billing cycle.
             instances = sorted(instances, key=self._remainingBillingInterval)
-            instanceIds = [instance.id for instance in islice(instances, numNodes)]
-        log.info('Terminating %i instance(s).', len(instanceIds))
-        if instanceIds:
-            self._logAndTerminate(instanceIds)
-        return len(instanceIds)
+            instances = [instance for instance in islice(instances, numNodes)]
+        log.info('Terminating %i instance(s).', len(instances))
+        if instances:
+            self._logAndTerminate(instances)
+        return len(instances)
 
     @abstractmethod
     def _addNodes(self, instances, numNodes, preemptable):
         raise NotImplementedError
 
     @abstractmethod
-    def _logAndTerminate(self, instanceIDs):
+    def _logAndTerminate(self, instances):
         raise NotImplementedError
 
     @abstractmethod
