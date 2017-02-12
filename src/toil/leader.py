@@ -523,22 +523,25 @@ class Leader(object):
             runningServiceJobs = set([x for x in serviceJobs if self.serviceManager.isRunning(x)])
             assert len(runningServiceJobs) <= totalRunningJobs
 
-            # If all the running jobs are active services then we have a potential deadlock
-            if len(runningServiceJobs) == totalRunningJobs:
-                # We wait self.config.deadlockWait seconds before declaring the system deadlocked
-                if self.potentialDeadlockedJobs != runningServiceJobs:
-                    self.potentialDeadlockedJobs = runningServiceJobs
-                    self.potentialDeadlockTime = time.time()
-                elif time.time() - self.potentialDeadlockTime >= self.config.deadlockWait:
-                    raise DeadlockException("The system is service deadlocked - all %d running jobs are active services" % totalRunningJobs)
-            else:
-                # We have observed non-service jobs running, so reset the potential deadlock
-                self.potentialDeadlockedJobs = set()
-                self.potentialDeadlockTime = 0
-        else:
-            # We have observed non-service jobs running, so reset the potential deadlock
-            self.potentialDeadlockedJobs = set()
-            self.potentialDeadlockTime = 0
+            # If all scheduled jobs are services
+            assert self.serviceJobsIssued + self.preemptableServiceJobsIssued <= self.getNumberOfJobsIssued()
+            if self.serviceJobsIssued + self.preemptableServiceJobsIssued == self.getNumberOfJobsIssued():
+
+                # Sanity check that all issued jobs are actually services
+                for jobNode in self.jobBatchSystemIDToIssuedJob.values():
+                    assert jobNode.jobStoreID in self.toilState.serviceJobStoreIDToPredecessorJob
+
+                # An active service job is one that is not in the process of terminating
+                activeServiceJobs = filter(lambda x : self.serviceManager.isActive(x), self.jobBatchSystemIDToIssuedJob.values())
+
+                # If all the service jobs are active then we have a potential deadlock
+                if len(activeServiceJobs) == len(self.jobBatchSystemIDToIssuedJob):
+                    # We wait self.config.deadlockWait seconds before declaring the system deadlocked
+                    if self.potentialDeadlockedJobs != activeServiceJobs:
+                        self.potentialDeadlockedJobs = activeServiceJobs
+                        self.potentialDeadlockTime = time.time()
+                    elif time.time() - self.potentialDeadlockTime >= self.config.deadlockWait:
+                        logger.critical('Would have triggered deadlock detection')
 
 
     def issueJob(self, jobNode):
