@@ -509,7 +509,7 @@ class Leader:
                         self.potentialDeadlockedJobs = activeServiceJobs
                         self.potentialDeadlockTime = time.time()
                     elif time.time() - self.potentialDeadlockTime >= self.config.deadlockWait:
-                        raise DeadlockException("The system is service deadlocked - all issued jobs %s are active services" % self.getNumberOfJobsIssued())
+                        logger.critical('Would have triggered deadlock detection')
 
 
     def issueJob(self, jobNode):
