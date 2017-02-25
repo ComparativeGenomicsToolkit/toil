@@ -362,6 +362,19 @@ class MesosBatchSystem(BatchSystemSupport,
         """
         self._trackOfferedNodes(offers)
 
+        # Filter out offers with 0 cores
+        keptOffers = []
+        for offer in offers:
+            cores, _, _, _ = self._parseOffer(offer)
+            if cores < 1:
+                driver.declineOffer(offer)
+            else:
+                keptOffers.append(offer)
+        offers = keptOffers
+
+        if len(offers) == 0:
+            return
+
         jobTypes = self._sortJobsByResourceReq()
 
         # TODO: We may want to assert that numIssued >= numRunning
@@ -377,9 +390,6 @@ class MesosBatchSystem(BatchSystemSupport,
             runnableTasks = []
             # TODO: In an offer, can there ever be more than one resource with the same name?
             offerCores, offerMemory, offerDisk, offerPreemptable = self._parseOffer(offer)
-            log.debug('Got offer %s for a %spreemptable slave with %.2f MiB memory, %.2f core(s) '
-                      'and %.2f MiB of disk.', offer.id.value, '' if offerPreemptable else 'non-',
-                      offerMemory, offerCores, offerDisk)
             remainingCores = offerCores
             remainingMemory = offerMemory
             remainingDisk = offerDisk
@@ -409,16 +419,6 @@ class MesosBatchSystem(BatchSystemSupport,
                     remainingMemory -= toMiB(jobType.memory)
                     remainingDisk -= toMiB(jobType.disk)
                     nextToLaunchIndex += 1
-                if self.jobQueues[jobType] and not runnableTasksOfType:
-                    log.debug('Offer %(offer)s not suitable to run the tasks with requirements '
-                              '%(requirements)r. Mesos offered %(memory)s memory, %(cores)s cores '
-                              'and %(disk)s of disk on a %(non)spreemptable slave.',
-                              dict(offer=offer.id.value,
-                                   requirements=jobType,
-                                   non='' if offerPreemptable else 'non-',
-                                   memory=fromMiB(offerMemory),
-                                   cores=offerCores,
-                                   disk=fromMiB(offerDisk)))
                 runnableTasks.extend(runnableTasksOfType)
             # Launch all runnable tasks together so we only call launchTasks once per offer
             if runnableTasks:
@@ -428,8 +428,6 @@ class MesosBatchSystem(BatchSystemSupport,
                     self._updateStateToRunning(offer, task)
                     log.debug('Launched Mesos task %s.', task.task_id.value)
             else:
-                log.debug('Although there are queued jobs, none of them could be run with offer %s '
-                          'extended to the framework.', offer.id)
                 driver.declineOffer(offer.id)
 
         if unableToRun and time.time() > (self.lastTimeOfferLogged + self.logPeriod):
