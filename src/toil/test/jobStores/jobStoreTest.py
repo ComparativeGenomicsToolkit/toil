@@ -1056,7 +1056,6 @@ class InvalidAWSJobStoreTest(ToilTest):
                           'us-west-2:a_b')
 
 
-@experimental
 @needs_azure
 class AzureJobStoreTest(AbstractJobStoreTest.Test):
     accountName = 'toiltest'
@@ -1107,11 +1106,13 @@ class AzureJobStoreTest(AbstractJobStoreTest.Test):
         return url, hashlib.md5(content).hexdigest()
 
     def _hashTestFile(self, url):
-        from toil.jobStores.azureJobStore import AzureJobStore
+        from toil.jobStores.azureJobStore import AzureJobStore, retry_azure
         url = urlparse.urlparse(url)
         blob = AzureJobStore._parseWasbUrl(url)
-        content = blob.service.get_blob_to_bytes(blob.container, blob.name)
-        return hashlib.md5(content).hexdigest()
+        for attempt in retry_azure():
+            with attempt:
+                content = blob.service.get_blob_to_bytes(blob.container, blob.name)
+                return hashlib.md5(content).hexdigest()
 
     def _createExternalStore(self):
         from toil.jobStores.azureJobStore import _fetchAzureAccountKey
@@ -1131,7 +1132,6 @@ class AzureJobStoreTest(AbstractJobStoreTest.Test):
         blobService.delete_container(containerName)
 
 
-@experimental
 @needs_azure
 class InvalidAzureJobStoreTest(ToilTest):
     def testInvalidJobStoreName(self):
@@ -1157,7 +1157,6 @@ class EncryptedAWSJobStoreTest(AWSJobStoreTest, AbstractEncryptedJobStoreTest.Te
     pass
 
 
-@experimental
 @needs_azure
 @needs_encryption
 class EncryptedAzureJobStoreTest(AzureJobStoreTest, AbstractEncryptedJobStoreTest.Test):

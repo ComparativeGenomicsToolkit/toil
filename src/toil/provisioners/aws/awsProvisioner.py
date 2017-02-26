@@ -26,6 +26,7 @@ from six import iteritems
 from six.moves import xrange
 
 from bd2k.util import memoize
+import boto.ec2
 from boto.ec2.blockdevicemapping import BlockDeviceMapping, BlockDeviceType
 from boto.exception import BotoServerError, EC2ResponseError
 from cgcloud.lib.ec2 import (ec2_instance_types, a_short_time, create_ondemand_instances,
@@ -48,7 +49,7 @@ class AWSProvisioner(AbstractProvisioner):
     def __init__(self, config, batchSystem):
         super(AWSProvisioner, self).__init__(config, batchSystem)
         self.instanceMetaData = get_instance_metadata()
-        self.clusterName = self.instanceMetaData['security-groups']
+        self.clusterName = self._getClusterNameFromTags(self.instanceMetaData)
         self.ctx = self._buildContext(clusterName=self.clusterName)
         self.spotBid = None
         assert config.preemptableNodeType or config.nodeType
@@ -62,6 +63,31 @@ class AWSProvisioner(AbstractProvisioner):
         self.keyName = self.instanceMetaData['public-keys'].keys()[0]
         self.masterPublicKey = self.setSSH()
         self.tags = self._getLeader(self.clusterName).tags
+
+    def _getClusterNameFromTags(self, md):
+        """Retrieve cluster name from current instance tags
+        """
+        instance = self._getClusterInstance(md)
+        return str(instance.tags["Name"])
+
+    def _getClusterInstance(self, md):
+        zone = getCurrentAWSZone()
+        region = Context.availability_zone_re.match(zone).group(1)
+        conn = boto.ec2.connect_to_region(region)
+        return conn.get_all_instances(instance_ids=[md["instance-id"]])[0].instances[0]
+
+    @staticmethod
+    def retryPredicate(e):
+        return AWSProvisioner.throttlePredicate(e)
+
+    @staticmethod
+    def throttlePredicate(e):
+        # boto/AWS gives multiple messages for the same error...
+        if e.status == 503 and 'Request limit exceeded' in e.body:
+            return True
+        elif e.status == 400 and 'Rate exceeded' in e.body:
+            return True
+        return False
 
     def setSSH(self):
         if not os.path.exists('/root/.sshSuccess'):
@@ -102,7 +128,7 @@ class AWSProvisioner(AbstractProvisioner):
         logger.info('SSH ready')
         kwargs['tty'] = sys.stdin.isatty()
         command = args if args else ['bash']
-        cls._sshAppliance(leader.ip_address, *command, **kwargs)
+        cls._sshAppliance(leader.public_dns_name, *command, **kwargs)
 
     def _remainingBillingInterval(self, instance):
         return awsRemainingBillingInterval(instance)
@@ -111,13 +137,14 @@ class AWSProvisioner(AbstractProvisioner):
     @memoize
     def _discoverAMI(cls, ctx):
         def descriptionMatches(ami):
-            return ami.description is not None and 'stable 1068.9.0' in ami.description
+            return ami.description is not None and 'stable 1235.4.0' in ami.description
         coreOSAMI = os.environ.get('TOIL_AWS_AMI')
         if coreOSAMI is not None:
             return coreOSAMI
         # that ownerID corresponds to coreOS
         coreOSAMI = [ami for ami in ctx.ec2.get_all_images(owners=['679593333241']) if
                      descriptionMatches(ami)]
+        logger.debug('Found the following matching AMIs: %s', coreOSAMI)
         assert len(coreOSAMI) == 1
         return coreOSAMI.pop().id
 
@@ -193,7 +220,7 @@ class AWSProvisioner(AbstractProvisioner):
     @classmethod
     def rsyncLeader(cls, clusterName, args, zone=None):
         leader = cls._getLeader(clusterName, zone=zone)
-        cls._rsyncNode(leader.ip_address, args)
+        cls._rsyncNode(leader.public_dns_name, args)
 
     @classmethod
     def _rsyncNode(cls, ip, args, applianceName='toil_leader'):
@@ -244,13 +271,15 @@ class AWSProvisioner(AbstractProvisioner):
     def _addTags(cls, instances, tags):
         for instance in instances:
             for key, value in iteritems(tags):
-                instance.add_tag(key, value)
+                for attempt in retry(predicate=AWSProvisioner.throttlePredicate):
+                    with attempt:
+                        instance.add_tag(key, value)
 
     @classmethod
     def _waitForNode(cls, instance, role):
         # returns the node's IP
         cls._waitForIP(instance)
-        instanceIP = instance.ip_address
+        instanceIP = instance.public_dns_name
         cls._waitForSSHPort(instanceIP)
         cls._waitForSSHKeys(instanceIP)
         # wait here so docker commands can be used reliably afterwards
@@ -281,7 +310,7 @@ class AWSProvisioner(AbstractProvisioner):
         while True:
             output = cls._sshInstance(ip_address, '/usr/bin/ps', 'aux')
             time.sleep(5)
-            if 'docker daemon' in output:
+            if 'dockerd' in output:
                 # docker daemon has started
                 break
             else:
@@ -337,13 +366,14 @@ class AWSProvisioner(AbstractProvisioner):
                 s.close()
 
     @classmethod
-    def launchCluster(cls, instanceType, keyName, clusterName, spotBid=None, userTags=None, zone=None):
+    def launchCluster(cls, instanceType, keyName, clusterName, spotBid=None, userTags=None, zone=None,
+                      vpcSubnet=None):
         if userTags is None:
             userTags = {}
         ctx = cls._buildContext(clusterName=clusterName, zone=zone)
         profileARN = cls._getProfileARN(ctx)
         # the security group name is used as the cluster identifier
-        cls._createSecurityGroup(ctx, clusterName)
+        sgs = cls._createSecurityGroup(ctx, clusterName, vpcSubnet)
         bdm = cls._getBlockDeviceMapping(ec2_instance_types[instanceType])
         leaderData = dict(role='leader',
                           image=applianceSelf(),
@@ -351,10 +381,12 @@ class AWSProvisioner(AbstractProvisioner):
                           sshKey='AAAAB3NzaC1yc2Enoauthorizedkeyneeded',
                           args=leaderArgs.format(name=clusterName))
         userData = awsUserData.format(**leaderData)
-        kwargs = {'key_name': keyName, 'security_groups': [clusterName],
+        kwargs = {'key_name': keyName, 'security_group_ids': [sg.id for sg in sgs],
                   'instance_type': instanceType,
                   'user_data': userData, 'block_device_map': bdm,
                   'instance_profile_arn': profileARN}
+        if vpcSubnet:
+            kwargs["subnet_id"] = vpcSubnet
         if not spotBid:
             logger.info('Launching non-preemptable leader')
             create_ondemand_instances(ctx.ec2, image_id=cls._discoverAMI(ctx),
@@ -386,21 +418,28 @@ class AWSProvisioner(AbstractProvisioner):
         if spotIDs:
             ctx.ec2.cancel_spot_instance_requests(request_ids=spotIDs)
         instancesToTerminate = awsFilterImpairedNodes(instances, ctx.ec2)
+        vpcId = None
         if instancesToTerminate:
+            vpcId = instancesToTerminate[0].vpc_id
             cls._deleteIAMProfiles(instances=instancesToTerminate, ctx=ctx)
             cls._terminateInstances(instances=instancesToTerminate, ctx=ctx)
         if len(instances) == len(instancesToTerminate):
             logger.info('Deleting security group...')
+            removed = False
             for attempt in retry(timeout=300, predicate=expectedShutdownErrors):
                 with attempt:
-                    try:
-                        ctx.ec2.delete_security_group(name=clusterName)
-                    except BotoServerError as e:
-                        if e.error_code == 'InvalidGroup.NotFound':
-                            pass
-                        else:
-                            raise
-            logger.info('... Succesfully deleted security group')
+                    for sg in ctx.ec2.get_all_security_groups():
+                        if sg.name == clusterName and vpcId and sg.vpc_id == vpcId:
+                            try:
+                                ctx.ec2.delete_security_group(group_id=sg.id)
+                                removed = True
+                            except BotoServerError as e:
+                                if e.error_code == 'InvalidGroup.NotFound':
+                                    pass
+                                else:
+                                    raise
+            if removed:
+                logger.info('... Succesfully deleted security group')
         else:
             assert len(instances) > len(instancesToTerminate)
             # the security group can't be deleted until all nodes are terminated
@@ -421,7 +460,9 @@ class AWSProvisioner(AbstractProvisioner):
     @classmethod
     def _terminateIDs(cls, instanceIDs, ctx):
         logger.info('Terminating instance(s): %s', instanceIDs)
-        ctx.ec2.terminate_instances(instance_ids=instanceIDs)
+        for attempt in retry(predicate=AWSProvisioner.throttlePredicate):
+            with attempt:
+                ctx.ec2.terminate_instances(instance_ids=instanceIDs)
         logger.info('Instance(s) terminated.')
 
     def _logAndTerminate(self, instances):
@@ -492,36 +533,49 @@ class AWSProvisioner(AbstractProvisioner):
                           sshKey=self.masterPublicKey,
                           args=workerArgs.format(ip=self.leaderIP, preemptable=preemptable, keyPath=keyPath))
         userData = awsUserData.format(**workerData)
+        sgs = [sg for sg in self.ctx.ec2.get_all_security_groups() if sg.name == self.clusterName]
         kwargs = {'key_name': self.keyName,
-                  'security_groups': [self.clusterName],
+                  'security_group_ids': [sg.id for sg in sgs],
                   'instance_type': self.instanceType.name,
                   'user_data': userData,
                   'block_device_map': bdm,
                   'instance_profile_arn': arn}
+        kwargs["subnet_id"] = self._getClusterInstance(self.instanceMetaData).subnet_id
 
         instancesLaunched = []
 
-        if not preemptable:
-            logger.info('Launching %s non-preemptable nodes', numNodes)
-            instancesLaunched = create_ondemand_instances(self.ctx.ec2, image_id=self._discoverAMI(self.ctx),
-                                      spec=kwargs, num_instances=1)
-        else:
-            logger.info('Launching %s preemptable nodes', numNodes)
-            kwargs['placement'] = getSpotZone(self.spotBid, self.instanceType.name, self.ctx)
-            # force generator to evaluate
-            instancesLaunched = list(create_spot_instances(ec2=self.ctx.ec2,
-                                                           price=self.spotBid,
-                                                           image_id=self._discoverAMI(self.ctx),
-                                                           tags={'clusterName': self.clusterName},
-                                                           spec=kwargs,
-                                                           num_instances=numNodes,
-                                                           tentative=True)
-                                     )
-            # flatten the list 
-            instancesLaunched = [item for sublist in instancesLaunched for item in sublist]
-        wait_instances_running(self.ctx.ec2, instancesLaunched)
+        for attempt in retry(predicate=AWSProvisioner.throttlePredicate):
+            with attempt:
+                # after we start launching instances we want to insure the full setup is done
+                # the biggest obstacle is AWS request throttling, so we retry on these errors at
+                # every request in this method
+                if not preemptable:
+                    logger.info('Launching %s non-preemptable nodes', numNodes)
+                    instancesLaunched = create_ondemand_instances(self.ctx.ec2, image_id=self._discoverAMI(self.ctx),
+                                                                  spec=kwargs, num_instances=numNodes)
+                else:
+                    logger.info('Launching %s preemptable nodes', numNodes)
+                    kwargs['placement'] = getSpotZone(self.spotBid, self.instanceType.name, self.ctx)
+                    # force generator to evaluate
+                    instancesLaunched = list(create_spot_instances(ec2=self.ctx.ec2,
+                                                                   price=self.spotBid,
+                                                                   image_id=self._discoverAMI(self.ctx),
+                                                                   tags={'clusterName': self.clusterName},
+                                                                   spec=kwargs,
+                                                                   num_instances=numNodes,
+                                                                   tentative=True)
+                                             )
+                    # flatten the list
+                    instancesLaunched = [item for sublist in instancesLaunched for item in sublist]
+
+        for attempt in retry(predicate=AWSProvisioner.throttlePredicate):
+            with attempt:
+                wait_instances_running(self.ctx.ec2, instancesLaunched)
+
+        # request throttling retry happens internally to these two methods to insure proper granularity
         AWSProvisioner._addTags(instancesLaunched, self.tags)
         self._propagateKey(instancesLaunched)
+
         logger.info('Launched %s new instance(s)', numNodes)
         return len(instancesLaunched)
 
@@ -529,15 +583,21 @@ class AWSProvisioner(AbstractProvisioner):
         if not self.config.sseKey:
             return
         for node in instances:
-            # since we're going to be rsyncing into the appliance we need the appliance to be running first
-            ipAddress = self._waitForNode(node, 'toil_worker')
-            self._rsyncNode(ipAddress, [self.config.sseKey, ':' + self.config.sseKey], applianceName='toil_worker')
+            for attempt in retry(predicate=AWSProvisioner.throttlePredicate):
+                with attempt:
+                    # since we're going to be rsyncing into the appliance we need the appliance to be running first
+                    ipAddress = self._waitForNode(node, 'toil_worker')
+                    self._rsyncNode(ipAddress, [self.config.sseKey, ':' + self.config.sseKey], applianceName='toil_worker')
 
     @classmethod
     def _getBlockDeviceMapping(cls, instanceType):
         # determine number of ephemeral drives via cgcloud-lib
         bdtKeys = ['', '/dev/xvdb', '/dev/xvdc', '/dev/xvdd']
         bdm = BlockDeviceMapping()
+        # Change root volume size to allow for bigger Docker instances
+        root_vol = BlockDeviceType()
+        root_vol.size = 50
+        bdm["/dev/xvda"] = root_vol
         # the first disk is already attached for us so start with 2nd.
         for disk in xrange(1, instanceType.disks + 1):
             bdm[bdtKeys[disk]] = BlockDeviceType(
@@ -549,9 +609,10 @@ class AWSProvisioner(AbstractProvisioner):
     @classmethod
     def __getNodesInCluster(cls, ctx, clusterName, preemptable=False, both=False):
         pendingInstances = ctx.ec2.get_only_instances(filters={'instance.group-name': clusterName,
-                                                               'instance-state-name': 'pending'})
+                                                       'instance-state-name': 'pending'})
+
         runningInstances = ctx.ec2.get_only_instances(filters={'instance.group-name': clusterName,
-                                                               'instance-state-name': 'running'})
+                                                       'instance-state-name': 'running'})
         instances = set(pendingInstances)
         if not preemptable and not both:
             return [x for x in instances.union(set(runningInstances)) if x.spot_instance_request_id is None]
@@ -583,14 +644,19 @@ class AWSProvisioner(AbstractProvisioner):
         return [request for request in requests if request.id in idsToCancel]
 
     @classmethod
-    def _createSecurityGroup(cls, ctx, name):
+    def _createSecurityGroup(cls, ctx, name, vpcSubnet=None):
         def groupNotFound(e):
             retry = (e.status == 400 and 'does not exist in default VPC' in e.body)
             return retry
-
+        vpcId = None
+        if vpcSubnet:
+            conn = boto.connect_vpc(region=ctx.ec2.region)
+            subnets = conn.get_all_subnets(subnet_ids=[vpcSubnet])
+            if len(subnets) > 0:
+                vpcId = subnets[0].vpc_id
         # security group create/get. ssh + all ports open within the group
         try:
-            web = ctx.ec2.create_security_group(name, 'Toil appliance security group')
+            web = ctx.ec2.create_security_group(name, 'Toil appliance security group', vpc_id=vpcId)
         except EC2ResponseError as e:
             if e.status == 400 and 'already exists' in e.body:
                 pass  # group exists- nothing to do
@@ -605,12 +671,17 @@ class AWSProvisioner(AbstractProvisioner):
                 with attempt:
                     # the following authorizes all port access within the web security group
                     web.authorize(ip_protocol='tcp', from_port=0, to_port=65535, src_group=web)
+        out = []
+        for sg in ctx.ec2.get_all_security_groups():
+            if sg.name == name and vpcId is None or sg.vpc_id == vpcId:
+                out.append(sg)
+        return out
 
     @classmethod
     def _getProfileARN(cls, ctx):
         def addRoleErrors(e):
             return e.status == 404
-        roleName = 'forked-toil'
+        roleName = 'toil'
         policy = dict(iam_full=iamFullPolicy, ec2_full=ec2FullPolicy,
                       s3_full=s3FullPolicy, sbd_full=sdbFullPolicy)
         iamRoleName = ctx.setup_iam_ec2_role(role_name=roleName, policies=policy)

@@ -21,6 +21,7 @@ from toil.version import baseVersion
 from toil.lib.bioio import setLoggingFromOptions
 
 from argparse import ArgumentParser
+import cwltool.errors
 import cwltool.load_tool
 import cwltool.main
 import cwltool.workflow
@@ -270,24 +271,27 @@ class CWLJob(Job):
         os.mkdir(outdir)
         os.mkdir(tmpdir)
 
-        # Copy input files out of the global file store.
+        # Copy input files out of the global file store, ensure path/location synchronized
         index = {}
         adjustFilesWithSecondary(cwljob, functools.partial(getFile, fileStore, inpdir, index=index))
+        cwltool.pathmapper.adjustFileObjs(cwljob, pathToLoc)
 
         # Run the tool
         opts = copy.deepcopy(self.executor_options)
         # Exports temporary directory for batch systems that reset TMPDIR
         os.environ["TMPDIR"] = os.path.realpath(opts.pop("tmpdir", None) or tmpdir)
-        output = cwltool.main.single_job_executor(self.cwltool, cwljob,
-                                                  basedir=os.getcwd(),
-                                                  outdir=outdir,
-                                                  tmpdir=tmpdir,
-                                                  tmpdir_prefix="tmp",
-                                                  **opts)
-        cwltool.builder.adjustDirObjs(output, locToPath)
-        cwltool.builder.adjustFileObjs(output, locToPath)
-        cwltool.builder.adjustFileObjs(output, functools.partial(computeFileChecksums,
-                                                                 cwltool.stdfsaccess.StdFsAccess(outdir)))
+        (output, status) = cwltool.main.single_job_executor(self.cwltool, cwljob,
+                                                            basedir=os.getcwd(),
+                                                            outdir=outdir,
+                                                            tmpdir=tmpdir,
+                                                            tmpdir_prefix="tmp",
+                                                            **opts)
+        if status != "success":
+            raise cwltool.errors.WorkflowException(status)
+        cwltool.pathmapper.adjustDirObjs(output, locToPath)
+        cwltool.pathmapper.adjustFileObjs(output, locToPath)
+        cwltool.pathmapper.adjustFileObjs(output, functools.partial(computeFileChecksums,
+                                                                    cwltool.stdfsaccess.StdFsAccess(outdir)))
         # Copy output files into the global file store.
         adjustFiles(output, functools.partial(writeFile, fileStore.writeGlobalFile, {}))
 
@@ -666,14 +670,14 @@ def main(args=None, stdout=sys.stdout):
         job = {}
 
     try:
-        cwltool.builder.adjustDirObjs(job, unsupportedInputCheck)
-        cwltool.builder.adjustFileObjs(job, unsupportedInputCheck)
+        cwltool.pathmapper.adjustDirObjs(job, unsupportedInputCheck)
+        cwltool.pathmapper.adjustFileObjs(job, unsupportedInputCheck)
     except cwltool.process.UnsupportedRequirement as e:
         logging.error(e)
         return 33
 
-    cwltool.builder.adjustDirObjs(job, pathToLoc)
-    cwltool.builder.adjustFileObjs(job, pathToLoc)
+    cwltool.pathmapper.adjustDirObjs(job, pathToLoc)
+    cwltool.pathmapper.adjustFileObjs(job, pathToLoc)
 
     if type(t) == int:
         return t
@@ -696,8 +700,8 @@ def main(args=None, stdout=sys.stdout):
 
     with Toil(options) as toil:
         def importDefault(tool):
-            cwltool.builder.adjustDirObjs(tool, locToPath)
-            cwltool.builder.adjustFileObjs(tool, locToPath)
+            cwltool.pathmapper.adjustDirObjs(tool, locToPath)
+            cwltool.pathmapper.adjustFileObjs(tool, locToPath)
             adjustFiles(tool, lambda x: "file://%s" % x if not urlparse.urlparse(x).scheme else x)
             adjustFiles(tool, functools.partial(writeFile, toil.importFile, {}))
         t.visit(importDefault)
@@ -715,13 +719,13 @@ def main(args=None, stdout=sys.stdout):
                 logging.error(e)
                 return 33
 
-            cwltool.builder.adjustDirObjs(builder.job, locToPath)
-            cwltool.builder.adjustFileObjs(builder.job, locToPath)
+            cwltool.pathmapper.adjustDirObjs(builder.job, locToPath)
+            cwltool.pathmapper.adjustFileObjs(builder.job, locToPath)
             adjustFiles(builder.job, lambda x: "file://%s" % os.path.abspath(os.path.join(basedir, x))
                         if not urlparse.urlparse(x).scheme else x)
-            cwltool.builder.adjustDirObjs(builder.job, pathToLoc)
-            cwltool.builder.adjustFileObjs(builder.job, pathToLoc)
-            cwltool.builder.adjustFileObjs(builder.job, addFilePartRefs)
+            cwltool.pathmapper.adjustDirObjs(builder.job, pathToLoc)
+            cwltool.pathmapper.adjustFileObjs(builder.job, pathToLoc)
+            cwltool.pathmapper.adjustFileObjs(builder.job, addFilePartRefs)
             adjustFiles(builder.job, functools.partial(writeFile, toil.importFile, {}))
             wf1.cwljob = builder.job
             outobj = toil.start(wf1)
@@ -731,6 +735,7 @@ def main(args=None, stdout=sys.stdout):
         try:
             adjustFilesWithSecondary(outobj, functools.partial(getFile, toil, outdir, index={},
                                                                export=True, rename_collision=True))
+            cwltool.pathmapper.adjustFileObjs(outobj, pathToLoc)
         except cwltool.process.UnsupportedRequirement as e:
             logging.error(e)
             return 33
