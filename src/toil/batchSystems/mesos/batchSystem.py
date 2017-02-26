@@ -367,7 +367,7 @@ class MesosBatchSystem(BatchSystemSupport,
         for offer in offers:
             cores, _, _, _ = self._parseOffer(offer)
             if cores < 1:
-                driver.declineOffer(offer)
+                driver.declineOffer(offer.id)
             else:
                 keptOffers.append(offer)
         offers = keptOffers
