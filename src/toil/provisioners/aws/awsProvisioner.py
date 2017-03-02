@@ -56,9 +56,13 @@ class AWSProvisioner(AbstractProvisioner):
         if config.preemptableNodeType is not None:
             nodeBidTuple = config.preemptableNodeType.split(':', 1)
             self.spotBid = nodeBidTuple[1]
-            self.instanceType = ec2_instance_types[nodeBidTuple[0]]
+            self.preemptableInstanceType = ec2_instance_types[nodeBidTuple[0]]
         else:
-            self.instanceType = ec2_instance_types[config.nodeType]
+            self.preemptableInstanceType = ec2_instance_types[config.nodeType]
+        if config.nodeType is not None:
+            self.nonPreemptableInstanceType = ec2_instance_types[config.nodeType]
+        else:
+            self.nonPreemptableInstanceType = self.preemptableInstanceType
         self.leaderIP = self.instanceMetaData['local-ipv4']
         self.keyName = self.instanceMetaData['public-keys'].keys()[0]
         self.masterPublicKey = self.setSSH()
@@ -103,8 +107,14 @@ class AWSProvisioner(AbstractProvisioner):
         assert masterPublicKey.startswith('AAAAB3NzaC1yc2E'), masterPublicKey
         return masterPublicKey
 
+    def _getInstanceType(self, preemptable=False):
+        if preemptable:
+            return self.preemptableInstanceType
+        else:
+            return self.nonPreemptableInstanceType
+
     def getNodeShape(self, preemptable=False):
-        instanceType = self.instanceType
+        instanceType = self._getInstanceType(preemptable=preemptable)
         return Shape(wallTime=60 * 60,
                      memory=instanceType.memory * 2 ** 30,
                      cores=instanceType.cores,
@@ -523,7 +533,8 @@ class AWSProvisioner(AbstractProvisioner):
                     raise
 
     def _addNodes(self, instances, numNodes, preemptable=False):
-        bdm = self._getBlockDeviceMapping(self.instanceType)
+        instanceType = self._getInstanceType(preemptable=preemptable)
+        bdm = self._getBlockDeviceMapping(instanceType)
         arn = self._getProfileARN(self.ctx)
         keyPath = '' if not self.config.sseKey else self.config.sseKey
         entryPoint = 'mesos-slave' if not self.config.sseKey else "waitForKey.sh"
@@ -536,7 +547,7 @@ class AWSProvisioner(AbstractProvisioner):
         sgs = [sg for sg in self.ctx.ec2.get_all_security_groups() if sg.name == self.clusterName]
         kwargs = {'key_name': self.keyName,
                   'security_group_ids': [sg.id for sg in sgs],
-                  'instance_type': self.instanceType.name,
+                  'instance_type': instanceType.name,
                   'user_data': userData,
                   'block_device_map': bdm,
                   'instance_profile_arn': arn}
@@ -555,7 +566,7 @@ class AWSProvisioner(AbstractProvisioner):
                                                                   spec=kwargs, num_instances=numNodes)
                 else:
                     logger.info('Launching %s preemptable nodes', numNodes)
-                    kwargs['placement'] = getSpotZone(self.spotBid, self.instanceType.name, self.ctx)
+                    kwargs['placement'] = getSpotZone(self.spotBid, instanceType.name, self.ctx)
                     # force generator to evaluate
                     instancesLaunched = list(create_spot_instances(ec2=self.ctx.ec2,
                                                                    price=self.spotBid,
