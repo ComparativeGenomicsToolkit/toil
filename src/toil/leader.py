@@ -559,8 +559,9 @@ class Leader(object):
         cur_logger = (logger.debug if jobNode.jobName.startswith(CWL_INTERNAL_JOBS)
                       else logger.info)
         cur_logger("Issued job %s with job batch system ID: "
-                   "%s and cores: %s, disk: %s, and memory: %s",
-                   jobNode, str(jobBatchSystemID), int(jobNode.cores),
+                   "%s and preemptability: %s, cores: %s, disk: %s, and "
+                   "memory: %s", jobNode, str(jobBatchSystemID),
+                   jobNode.preemptable, int(jobNode.cores),
                    bytes2human(jobNode.disk), bytes2human(jobNode.memory))
         if self.toilMetrics:
             self.toilMetrics.logIssuedJob(jobNode)
