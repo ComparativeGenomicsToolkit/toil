@@ -23,6 +23,7 @@ import sys
 import time
 import uuid
 import dill
+import tempfile
 
 from abc import ABCMeta, abstractmethod
 from argparse import ArgumentParser
@@ -863,11 +864,14 @@ class Job(JobLikeObject):
         logger.debug('Loading user module %s.', userModule)
         userModule = cls._loadUserModule(userModule)
         pickleFile = commandTokens[1]
+        handle, f = tempfile.mkstemp()
+        os.close(handle)
+        os.remove(f)
         if pickleFile == "firstJob":
-            openFileStream = jobStore.readSharedFileStream(pickleFile)
+            jobStore.readSharedFile(pickleFile, f)
         else:
-            openFileStream = jobStore.readFileStream(pickleFile)
-        with openFileStream as fileHandle:
+            jobStore.readFile(pickleFile, f)
+        with open(f) as fileHandle:
             return cls._unpickle(userModule, fileHandle, jobStore.config)
 
 
