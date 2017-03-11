@@ -282,6 +282,7 @@ coreos:
         ExecStart=/usr/bin/docker run \
             --entrypoint={entrypoint} \
             --net=host \
+            -v /sys:/sys \
             -v /var/run/docker.sock:/var/run/docker.sock \
             -v /var/lib/mesos:/var/lib/mesos \
             -v /var/lib/docker:/var/lib/docker \
