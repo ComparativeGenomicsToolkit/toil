@@ -111,6 +111,10 @@ class JobGraph(JobNode):
             self._memory = config.defaultMemory
             logger.warn("We have increased the default memory of the failed job %s to %s bytes",
                         self, self.memory)
+        if self.preemptable:
+            self._preemptable = False
+            logger.warn("We have set the failed job %s to be non-preemptable",
+                        self)
 
     def getLogFileHandle( self, jobStore ):
         """
