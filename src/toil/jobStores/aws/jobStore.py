@@ -319,7 +319,7 @@ class AWSJobStore(AbstractJobStore):
         job = cPickle.loads(binary)
         return job
     def _aws_job_to_item(self, job):
-        binary = cPickle.dumps(job)
+        binary = cPickle.dumps(job, protocol=cPickle.HIGHEST_PROTOCOL)
         if len(binary) > AWSJob.maxBinarySize():
             #Store as an overlarge job in S3
             with self.writeFileStream() as (writable, fileID):
