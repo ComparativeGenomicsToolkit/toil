@@ -21,6 +21,7 @@ import pickle
 import pwd
 import socket
 import time
+from bisect import bisect
 from collections import defaultdict
 from operator import attrgetter
 from struct import unpack
@@ -40,7 +41,7 @@ from toil import resolveEntryPoint
 from toil.batchSystems.abstractBatchSystem import (AbstractScalableBatchSystem,
                                                    BatchSystemSupport,
                                                    NodeInfo)
-from toil.batchSystems.mesos import ToilJob, ResourceRequirement, TaskData
+from toil.batchSystems.mesos import ToilJob, ResourceRequirement, TaskData, JobQueue
 
 log = logging.getLogger(__name__)
 
@@ -87,7 +88,7 @@ class MesosBatchSystem(BatchSystemSupport,
 
         # Dictionary of queues, which toil assigns jobs to. Each queue represents a job type,
         # defined by resource usage
-        self.jobQueues = defaultdict(list)
+        self.jobQueues = JobQueue()
 
         # Address of the Mesos master in the form host:port where host can be an IP or a hostname
         self.masterAddress = masterAddress
@@ -125,7 +126,7 @@ class MesosBatchSystem(BatchSystemSupport,
         # requirement. If we tracked the set of preemptable nodes instead, we'd have to use
         # absence as an indicator of non-preemptability and could therefore be misled into
         # believeing that a recently launched preemptable node was non-preemptable.
-        self.nonPreemptibleNodes = set()
+        self.nonPreemptableNodes = set()
 
         self.executor = self._buildExecutor()
 
@@ -161,7 +162,10 @@ class MesosBatchSystem(BatchSystemSupport,
                       workerCleanupInfo=self.workerCleanupInfo)
         jobType = job.resources
         log.debug("Queueing the job command: %s with job id: %s ...", jobNode.command, str(jobID))
-        self.jobQueues[jobType].append(job)
+
+        # TODO: round all elements of resources
+
+        self.jobQueues.insertJob(job, jobType)
         self.taskResources[jobID] = job.resources
         log.debug("... queued")
         return jobID
@@ -191,10 +195,7 @@ class MesosBatchSystem(BatchSystemSupport,
                 time.sleep(1)
 
     def getIssuedBatchJobIDs(self):
-        jobIds = set()
-        for queue in self.jobQueues.values():
-            for job in queue:
-                jobIds.add(job.jobID)
+        jobIds = set(self.jobQueues.jobIDs())
         jobIds.update(self.runningJobMap.keys())
         return list(jobIds)
 
@@ -332,29 +333,23 @@ class MesosBatchSystem(BatchSystemSupport,
                 disk += resource.scalar.value
         return cores, memory, disk, preemptable
 
-    def _prepareToRun(self, jobType, offer, index):
+    def _prepareToRun(self, jobType, offer):
         # Get the first element to insure FIFO
-        job = self.jobQueues[jobType][index]
+        job = self.jobQueues.nextJobOfType(jobType)
         task = self._newMesosTask(job, offer)
         return task
 
-    def _deleteByJobID(self, jobID, ):
-        # FIXME: Surely there must be a more efficient way to do this
-        for jobType in self.jobQueues.values():
-            for job in jobType:
-                if jobID == job.jobID:
-                    jobType.remove(job)
-
-    def _updateStateToRunning(self, offer, task):
-        resourceKey = int(task.task_id.value)
-        resources = self.taskResources[resourceKey]
-        self.runningJobMap[int(task.task_id.value)] = TaskData(startTime=time.time(),
-                                                               slaveID=offer.slave_id.value,
-                                                               executorID=task.executor.executor_id.value,
-                                                               cores=resources.cores,
-                                                               memory=resources.memory)
-        del self.taskResources[resourceKey]
-        self._deleteByJobID(int(task.task_id.value))
+    def _updateStateToRunning(self, offer, runnableTasks):
+        for task in runnableTasks:
+            resourceKey = int(task.task_id.value)
+            resources = self.taskResources[resourceKey]
+            self.runningJobMap[int(task.task_id.value)] = TaskData(startTime=time.time(),
+                                                                   slaveID=offer.slave_id.value,
+                                                                   executorID=task.executor.executor_id.value,
+                                                                   cores=resources.cores,
+                                                                   memory=resources.memory)
+            del self.taskResources[resourceKey]
+            log.debug('Launched Mesos task %s.', task.task_id.value)
 
     def resourceOffers(self, driver, offers):
         """
@@ -362,20 +357,7 @@ class MesosBatchSystem(BatchSystemSupport,
         """
         self._trackOfferedNodes(offers)
 
-        # Filter out offers with 0 cores
-        keptOffers = []
-        for offer in offers:
-            cores, _, _, _ = self._parseOffer(offer)
-            if cores < 1:
-                driver.declineOffer(offer.id)
-            else:
-                keptOffers.append(offer)
-        offers = keptOffers
-
-        if len(offers) == 0:
-            return
-
-        jobTypes = self._sortJobsByResourceReq()
+        jobTypes = self.jobQueues.sorted()
 
         # TODO: We may want to assert that numIssued >= numRunning
         if not jobTypes or len(self.getIssuedBatchJobIDs()) == len(self.getRunningBatchJobIDs()):
@@ -390,6 +372,9 @@ class MesosBatchSystem(BatchSystemSupport,
             runnableTasks = []
             # TODO: In an offer, can there ever be more than one resource with the same name?
             offerCores, offerMemory, offerDisk, offerPreemptable = self._parseOffer(offer)
+            log.debug('Got offer %s for a %spreemptable slave with %.2f MiB memory, %.2f core(s) '
+                      'and %.2f MiB of disk.', offer.id.value, '' if offerPreemptable else 'non-',
+                      offerMemory, offerCores, offerDisk)
             remainingCores = offerCores
             remainingMemory = offerMemory
             remainingDisk = offerDisk
@@ -401,14 +386,14 @@ class MesosBatchSystem(BatchSystemSupport,
                 # loop.
                 nextToLaunchIndex = 0
                 # Toil specifies disk and memory in bytes but Mesos uses MiB
-                while (len(self.jobQueues[jobType]) - nextToLaunchIndex > 0
+                while ( not self.jobQueues.typeEmpty(jobType)
                        # On a non-preemptable node we can run any job, on a preemptable node we
                        # can only run preemptable jobs:
                        and (not offerPreemptable or jobType.preemptable)
                        and remainingCores >= jobType.cores
                        and remainingDisk >= toMiB(jobType.disk)
                        and remainingMemory >= toMiB(jobType.memory)):
-                    task = self._prepareToRun(jobType, offer, nextToLaunchIndex)
+                    task = self._prepareToRun(jobType, offer)
                     # TODO: this used to be a conditional but Hannes wanted it changed to an assert
                     # TODO: ... so we can understand why it exists.
                     assert int(task.task_id.value) not in self.runningJobMap
@@ -419,15 +404,25 @@ class MesosBatchSystem(BatchSystemSupport,
                     remainingMemory -= toMiB(jobType.memory)
                     remainingDisk -= toMiB(jobType.disk)
                     nextToLaunchIndex += 1
+                else:
+                    log.debug('Offer %(offer)s not suitable to run the tasks with requirements '
+                              '%(requirements)r. Mesos offered %(memory)s memory, %(cores)s cores '
+                              'and %(disk)s of disk on a %(non)spreemptable slave.',
+                              dict(offer=offer.id.value,
+                                   requirements=jobType,
+                                   non='' if offerPreemptable else 'non-',
+                                   memory=fromMiB(offerMemory),
+                                   cores=offerCores,
+                                   disk=fromMiB(offerDisk)))
                 runnableTasks.extend(runnableTasksOfType)
             # Launch all runnable tasks together so we only call launchTasks once per offer
             if runnableTasks:
                 unableToRun = False
                 driver.launchTasks(offer.id, runnableTasks)
-                for task in runnableTasks:
-                    self._updateStateToRunning(offer, task)
-                    log.debug('Launched Mesos task %s.', task.task_id.value)
+                self._updateStateToRunning(offer, runnableTasks)
             else:
+                log.debug('Although there are queued jobs, none of them could be run with offer %s '
+                          'extended to the framework.', offer.id)
                 driver.declineOffer(offer.id)
 
         if unableToRun and time.time() > (self.lastTimeOfferLogged + self.logPeriod):
@@ -447,11 +442,11 @@ class MesosBatchSystem(BatchSystemSupport,
                     preemptable = strict_bool(attribute.text.value)
             if preemptable:
                 try:
-                    self.nonPreemptibleNodes.remove(offer.slave_id.value)
+                    self.nonPreemptableNodes.remove(offer.slave_id.value)
                 except KeyError:
                     pass
             else:
-                self.nonPreemptibleNodes.add(offer.slave_id.value)
+                self.nonPreemptableNodes.add(offer.slave_id.value)
 
     def _newMesosTask(self, job, offer):
         """
@@ -573,7 +568,7 @@ class MesosBatchSystem(BatchSystemSupport,
                 for nodeAddress, executor in iteritems(self.executors)
                 if time.time() - executor.lastSeen < 600
                 and (preemptable is None
-                     or preemptable == (executor.slaveId not in self.nonPreemptibleNodes))}
+                     or preemptable == (executor.slaveId not in self.nonPreemptableNodes))}
 
     def reregistered(self, driver, masterInfo):
         """

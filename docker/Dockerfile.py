@@ -85,7 +85,8 @@ print(heredoc('''
 
     # Install statically linked version of docker client
     RUN curl https://get.docker.com/builds/Linux/x86_64/docker-1.12.3.tgz \
-        | tar xzf - docker/docker -O > /usr/bin/docker && chmod +x /usr/bin/docker
+         | tar -xvzf - --transform='s,[^/]*/,,g' -C /usr/local/bin/ \
+         && chmod u+x /usr/local/bin/docker
 
     # Fix for Mesos interface dependency missing on ubuntu
     RUN pip install protobuf==3.0.0
