@@ -164,11 +164,16 @@ def _docker(job,
 
     if outfile:
         subprocess.check_call(call, stdout=outfile)
+        _fixPermissions(tool=tool, workDir=workDir)
     else:
         if checkOutput:
-            return subprocess.check_output(call)
+            output = subprocess.check_output(call)
+            _fixPermissions(tool=tool, workDir=workDir)
+            return output
+
         else:
             subprocess.check_call(call)
+            _fixPermissions(tool=tool, workDir=workDir)
 
 
 FORGO = 0
@@ -232,7 +237,6 @@ def _fixPermissions(tool, workDir):
 
 def _getContainerName(job):
     return '--'.join([str(job),
-                      job.fileStore.jobID,
                       base64.b64encode(os.urandom(9), '-_')]).replace("'", '').replace('_', '')
 
 

@@ -1,7 +1,7 @@
 .. _commandRef:
 
-Command line interface and arguments
-====================================
+Command Line Interface
+======================
 
 Toil provides many command line options when running a toil script (see :ref:`running`),
 or using Toil to run a CWL script. Many of these are described below.
@@ -38,8 +38,9 @@ The job store will never be deleted with ``--stats``, as it overrides ``--clean`
 Cluster Utilities
 -----------------
 There are several utilites used for starting and managing a Toil cluster using
-the AWS provisioner. They use the ``toil launch-cluster``, ``toil rsync-cluster``,
-``toil ssh-cluster``, and ``toil destroy-cluster`` entry points.
+the AWS provisioner. They make up the :ref:`Toil_Provisioner`, and they use the
+``toil launch-cluster``, ``toil rsync-cluster``, ``toil ssh-cluster``, and
+``toil destroy-cluster`` entry points. For more information, see :ref:`Toil_Provisioner`
 
 .. note::
 
@@ -88,8 +89,12 @@ Running toil scripts has one required positional argument: the job store.  The d
 to where the user would like the job store to be created. To use the :ref:`quick start <quickstart>` example,
 if you're on a node that has a large **/scratch** volume, you can specify the jobstore be created there by
 executing: ``python HelloWorld.py /scratch/my-job-store``, or more explicitly,
-``python HelloWorld.py file:/scratch/my-job-store``.  Toil uses the colon as way to explicitly name what type of
-job store the user would like.  Different types of job store options can be looked up in :ref:`jobStoreInterface`.
+``python HelloWorld.py file:/scratch/my-job-store``. Toil uses the colon as way to explicitly name what type of
+job store the user would like. The other job store types are AWS (``aws:region-here:job-store-name``),
+Azure (``azure:account-name-here:job-store-name``), and the experimental Google
+job store (``google:projectID-here:job-store-name``). More information on these job store can be found
+at :ref:`Cloud_Running`. Different types of job store options can be
+looked up in :ref:`jobStoreInterface`.
 
 Miscellaneous
 -------------

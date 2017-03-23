@@ -2,6 +2,7 @@ import logging
 import signal
 import time
 import uuid
+from pwd import getpwuid
 from threading import Thread
 
 import os
@@ -30,7 +31,7 @@ class DockerTest(ToilTest):
     def setUp(self):
         self.tempDir = self._createTempDir(purpose='tempDir')
 
-    def testDockerClean(self):
+    def testDockerClean(self, caching=True):
         """
         Run the test container that creates a file in the work dir, and sleeps for 5 minutes.  Ensure
         that the calling job gets SIGKILLed after a minute, leaving behind the spooky/ghost/zombie
@@ -57,6 +58,8 @@ class DockerTest(ToilTest):
         options.logLevel = 'INFO'
         options.workDir = work_dir
         options.clean = 'always'
+        if not caching:
+            options.disableCaching = True
         for rm in (True, False):
             for detached in (True, False):
                 if detached and rm:
@@ -64,7 +67,6 @@ class DockerTest(ToilTest):
                 for defer in (FORGO, STOP, RM, None):
                     # Not using base64 logic here since it might create a name starting with a `-`.
                     container_name = uuid.uuid4().hex
-                    print rm, detached, defer
                     A = Job.wrapJobFn(_testDockerCleanFn, data_dir, detached, rm, defer,
                                       container_name)
                     try:
@@ -94,7 +96,7 @@ class DockerTest(ToilTest):
                         _dockerKill(container_name, RM)
                         os.remove(test_file)
 
-    def testDockerPipeChain(self):
+    def testDockerPipeChain(self, caching=True):
         """
         Test for piping API for dockerCall().  Using this API (activated when list of
         argument lists is given as parameters), commands a piped together into a chain
@@ -105,9 +107,31 @@ class DockerTest(ToilTest):
         options.logLevel = 'INFO'
         options.workDir = self.tempDir
         options.clean = 'always'
+        if not caching:
+            options.disableCaching = True
         A = Job.wrapJobFn(_testDockerPipeChainFn)
         rv = Job.Runner.startToil(A, options)
         assert rv.strip() == '2'
+
+    def testDockerPermissions(self, caching=True):
+        options = Job.Runner.getDefaultOptions(os.path.join(self.tempDir, 'jobstore'))
+        options.logLevel = 'INFO'
+        options.workDir = self.tempDir
+        options.clean = 'always'
+        if not caching:
+            options.disableCaching = True
+        A = Job.wrapJobFn(_testDockerPermissions)
+        Job.Runner.startToil(A, options)
+
+    def testDockerPermissionsNonCaching(self):
+        self.testDockerPermissions(caching=False)
+
+    def testNonCachingDockerChain(self):
+        self.testDockerPipeChain(caching=False)
+
+    def testNonCachingDockerClean(self):
+        self.testDockerClean(caching=False)
+
 
 def _testDockerCleanFn(job, workDir, detached=None, rm=None, defer=None, containerName=None):
     """
@@ -142,9 +166,23 @@ def _testDockerCleanFn(job, workDir, detached=None, rm=None, defer=None, contain
     t.start()
     dockerCall(job, tool='quay.io/ucsc_cgl/spooky_test', workDir=workDir, defer=defer, dockerParameters=dockerParameters)
 
+
 def _testDockerPipeChainFn(job):
     """
     Return the result of simple pipe chain.  Should be 2
     """
     parameters = [ ['printf', 'x\n y\n'], ['wc', '-l'] ]
     return dockerCheckOutput(job, tool='quay.io/ucsc_cgl/spooky_test', parameters=parameters)
+
+
+def _testDockerPermissions(job):
+    def ownerName(filename):
+        return getpwuid(os.stat(filename).st_uid).pw_name
+
+    testDir = job.fileStore.getLocalTempDir()
+    dockerCall(job, tool='ubuntu', workDir=testDir, parameters=[['touch', '/data/test.txt']])
+    outFile = os.path.join(testDir, 'test.txt')
+    assert os.path.exists(outFile)
+    assert not "root" == ownerName(outFile)
+
+

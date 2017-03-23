@@ -373,6 +373,8 @@ workflow, with jobs defined within a job or job function being created at
 run time.
 
 
+.. _promises:
+
 Promises
 --------
 
@@ -412,6 +414,19 @@ evaluated. A promise (:class:`toil.job.Promise`) is essentially a pointer to
 for the return value that is replaced by the actual return value once it has
 been evaluated. Therefore, when ``j2`` is run the promise becomes 2.
 
+Promises also support indexing of return values::
+
+    def parent(job):
+        indexable = Job.wrapJobFn(fn)
+        job.addChild(indexable)
+        job.addFollowOnFn(raiseWrap, indexable.rv(2))
+
+    def raiseWrap(arg):
+        raise RuntimeError(arg) # raises "2"
+
+    def fn(job):
+        return (0, 1, 2, 3)
+
 Promises can be quite useful. For example, we can combine dynamic job creation
 with promises to achieve a job creation process that mimics the functional
 patterns possible in many programming languages::
@@ -439,6 +454,74 @@ The return value ``l`` of the workflow is a list of all binary strings of
 length 10, computed recursively. Although a toy example, it demonstrates how
 closely Toil workflows can mimic typical programming patterns.
 
+
+Promised Requirements
+---------------------
+
+Promised requirements are a special case of :ref:`promises` that allow a job's
+return value to be used as another job's resource requirements.
+
+This is useful when, for example, a job's storage requirement is determined by a
+file staged to the job store by an earlier job::
+
+    from toil.job import Job, PromisedRequirement
+    from toil.common import Toil
+    import os
+
+    def parentJob(job):
+        downloadJob = Job.wrapJobFn(stageFn, "File://"+os.path.realpath(__file__), cores=0.1, memory='32M', disk='1M')
+        job.addChild(downloadJob)
+
+        analysis = Job.wrapJobFn(analysisJob, fileStoreID=downloadJob.rv(0),
+                                 disk=PromisedRequirement(downloadJob.rv(1)))
+        job.addFollowOn(analysis)
+
+    def stageFn(job, url, cores=1):
+        importedFile = job.fileStore.importFile(url)
+        return importedFile, importedFile.size
+
+    def analysisJob(job, fileStoreID, cores=2):
+        # now do some analysis on the file
+        pass
+
+    if __name__ == "__main__":
+        with Toil(Job.Runner.getDefaultOptions("./toilWorkflowRun")) as toil:
+            toil.start(Job.wrapJobFn(parentJob))
+
+
+Note that this also makes use of the ``size`` attribute of the :ref:`FileID` object.
+This promised requirements mechanism can also be used in combination with an aggregator for
+multiple jobs' output values::
+
+    def parentJob(job):
+        aggregator = []
+        for fileNum in range(0,10):
+            downloadJob = Job.wrapJobFn(stageFn, "File://"+os.path.realpath(__file__), cores=0.1, memory='32M', disk='1M')
+            job.addChild(downloadJob)
+            aggregator.append(downloadJob)
+
+        analysis = Job.wrapJobFn(analysisJob, fileStoreID=downloadJob.rv(0),
+                                 disk=PromisedRequirement(lambda xs: sum(xs), [j.rv(1) for j in aggregator]))
+        job.addFollowOn(analysis)
+
+
+.. admonition:: Limitations
+
+    Just like regular promises, the return value must be determined prior to
+    scheduling any job that depends on the return value. In our example above, notice
+    how the dependant jobs were follow ons to the parent while promising jobs are
+    children of the parent. This ordering ensures that all promises are
+    properly fulfilled.
+
+.. _FileID:
+
+
+FileID
+------
+
+This object is a small wrapper around Python's builtin string class. It is used to
+represent a file's ID in the file store, and has a ``size`` attribute that is the
+file's size in bytes. This object is returned by ``importFile`` and ``writeGlobalFile``.
 
 Managing files within a workflow
 --------------------------------
@@ -820,3 +903,78 @@ write::
 
 Note the call to :func:`toil.job.Job.encapsulate` creates the
 :class:`toil.job.Job.EncapsulatedJob`.
+
+.. _depending_on_toil:
+
+Depending on Toil
+-----------------
+
+If you are packing your workflow(s) as a pip-installable distribution on PyPI,
+you might be tempted to declare Toil as a dependency in your ``setup.py``, via
+the ``install_requires`` keyword argument to ``setup()``. Unfortunately, this
+does not work, for two reasons: For one, Toil uses Setuptools' *extra*
+mechanism to manage its own optional dependencies. If you explicitly declared a
+dependency on Toil, you would have to hard-code a particular combination of
+extras (or no extras at all), robbing the user of the choice what Toil extras
+to install. Secondly, and more importantly, declaring a dependency on Toil
+would only lead to Toil being installed on the leader node of a cluster, but
+not the worker nodes. Hot-deployment does not work here because Toil cannot
+hot-deploy itself, the classic "Which came first, chicken or egg?" problem.
+
+In other words, you shouldn't explicitly depend on Toil. Document the
+dependency instead (as in "This workflow needs Toil version X.Y.Z to be
+installed") and optionally add a version check to your ``setup.py``. Refer to
+the ``check_version()`` function in the ``toil-lib`` project's `setup.py`_ for
+an example. Alternatively, you can also just depend on ``toil-lib`` and you'll
+get that check for free.
+
+.. _setup.py: https://github.com/BD2KGenomics/toil-lib/blob/master/setup.py
+
+If your workflow depends on a dependency of Toil, e.g. ``bd2k-python-lib``,
+consider not making that dependency explicit either. If you do, you risk a
+version conflict between your project and Toil. The ``pip`` utility may
+silently ignore that conflict, breaking either Toil or your workflow. It is
+safest to simply assume that Toil installs that dependency for you. The only
+downside is that you are locked into the exact version of that dependency that
+Toil declares. But such is life with Python, which, unlike Java, has no means
+of dependencies belonging to different software components within the same
+process, and whose favored software distribution utility is `incapable`_ of
+properly resolving overlapping dependencies and detecting conflicts.
+
+.. _incapable: https://github.com/pypa/pip/issues/988
+
+Best practices for Dockerizing Toil workflows
+---------------------------------------------
+
+`Computational Genomics Lab`_'s `Dockstore`_ based production system provides workflow authors a
+way to run Dockerized versions of their pipeline in an automated, scalable fashion. To be compatible
+with this system of a workflow should meet the following requirements. In addition
+to the Docker container, a common workflow language `descriptor file`_ is needed. For inputs:
+
+* Only command line arguments should be used for configuring the workflow. If
+  the workflow relies on a configuration file, like `Toil-RNAseq`_ or `ProTECT`_, a
+  wrapper script inside the Docker container can be used to parse the CLI and
+  generate the necessary configuration file.
+* All inputs to the pipeline should be explicitly enumerated rather than implicit.
+  For example, don't rely on one FASTQ read's path to discover the location of its
+  pair. This is necessary since all inputs are mapped to their own isolated directories
+  when the Docker is called via Dockstore.
+* All inputs must be documented in the CWL descriptor file. Examples of this file can be seen in
+  both `Toil-RNAseq`_ and `ProTECT`_.
+
+For outputs:
+
+* All outputs should be written to a local path rather than S3.
+* Take care to package outputs in a local and user-friendly way. For example,
+  don't tar up all output if there are specific files that will care to see individually.
+* All output file names should be deterministic and predictable. For example,
+  don't prepend the name of an output file with PASS/FAIL depending on the outcome
+  of the pipeline.
+* All outputs must be documented in the CWL descriptor file. Examples of this file can be seen in
+  both `Toil-RNAseq`_ and `ProTECT`_.
+
+.. _descriptor file: https://dockstore.org/docs/getting-started-with-cwl
+.. _Computational Genomics Lab: https://cgl.genomics.ucsc.edu/
+.. _Dockstore: https://dockstore.org/docs
+.. _Toil-RNAseq: https://github.com/BD2KGenomics/toil-rnaseq
+.. _ProTECT: https://github.com/BD2KGenomics/protect
