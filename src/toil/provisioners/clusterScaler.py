@@ -15,6 +15,7 @@
 from __future__ import absolute_import
 
 import logging
+import math
 from collections import deque
 from threading import Lock
 
@@ -23,8 +24,7 @@ from bd2k.util.threading import ExceptionalThread
 from bd2k.util.throttle import throttle
 
 from toil.batchSystems.abstractBatchSystem import AbstractScalableBatchSystem
-from toil.common import Config
-from toil.provisioners.abstractProvisioner import AbstractProvisioner, Shape
+from toil.provisioners.abstractProvisioner import Shape
 
 logger = logging.getLogger(__name__)
 
@@ -344,7 +344,7 @@ class ScalerThread(ExceptionalThread):
                 # to service jobs running indefinitely.
                 
                 # How many jobs are currently running and their average runtime.
-                numberOfRunningJobs, currentAvgRuntime  = self.scaler.leader.getNumberAndAvgRuntimeOfCurrentlyRunningJobs()
+                numberOfRunningJobs, currentAvgRuntime = self.scaler.leader.getNumberAndAvgRuntimeOfCurrentlyRunningJobs()
                 
                 # Average runtime of recently completed jobs
                 historicalAvgRuntime = sum(map(lambda jS : jS.wallTime, recentJobShapes))/len(recentJobShapes)
@@ -399,8 +399,13 @@ class ScalerThread(ExceptionalThread):
                     estimatedNodes = self.maxNodes
                 elif estimatedNodes < self.minNodes:
                     logger.info('Raising the estimated number of necessary %s (%s) to the '
-                                'configured mininimum (%s).', self.nodeTypeString, estimatedNodes, self.minNodes)
+                                'configured minimum (%s).', self.nodeTypeString, estimatedNodes, self.minNodes)
                     estimatedNodes = self.minNodes
+
+                # Sanity check that we don't go way over the limit that we could possibly fill with jobs.
+                maxNodesNeededToFillQueue = math.ceil(queueSize / self.nodeShape.cores)
+                if estimatedNodes >= maxNodesNeededToFillQueue:
+                    estimatedNodes = int(maxNodesNeededToFillQueue)
 
                 if estimatedNodes != self.totalNodes:
                     logger.info('Changing the number of %s from %s to %s.', self.nodeTypeString, self.totalNodes,
