@@ -403,8 +403,10 @@ class ScalerThread(ExceptionalThread):
                     estimatedNodes = self.minNodes
 
                 # Sanity check that we don't go way over the limit that we could possibly fill with jobs.
-                maxNodesNeededToFillQueue = math.ceil(queueSize / self.nodeShape.cores)
+                maxNodesNeededToFillQueue = math.ceil(float(queueSize) / self.nodeShape.cores)
                 if estimatedNodes >= maxNodesNeededToFillQueue:
+                    logger.info('Limiting the number of total nodes from %s to the amount needed to fill the current queue (%s)',
+                                estimatedNodes, maxNodesNeededToFillQueue)
                     estimatedNodes = int(maxNodesNeededToFillQueue)
 
                 if estimatedNodes != self.totalNodes:
