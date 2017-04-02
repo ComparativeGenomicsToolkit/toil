@@ -979,7 +979,7 @@ class JobStoreSupport(AbstractJobStore):
             with attempt:
                 with closing(urlopen(url.geturl())) as readable:
                     # just read the header for content length
-                    return readable.info().get('content-length')
+                    return int(readable.info().get('content-length'))
 
     @classmethod
     def _readFromUrl(cls, url, writable):
