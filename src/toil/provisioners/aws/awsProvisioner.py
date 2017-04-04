@@ -396,7 +396,8 @@ class AWSProvisioner(AbstractProvisioner):
         kwargs = {'key_name': keyName, 'security_group_ids': [sg.id for sg in sgs],
                   'instance_type': instanceType,
                   'user_data': userData, 'block_device_map': bdm,
-                  'instance_profile_arn': profileARN}
+                  'instance_profile_arn': profileARN,
+                  'placement': zone}
         if vpcSubnet:
             kwargs["subnet_id"] = vpcSubnet
         if not spotBid:
@@ -552,7 +553,8 @@ class AWSProvisioner(AbstractProvisioner):
                   'instance_type': instanceType.name,
                   'user_data': userData,
                   'block_device_map': bdm,
-                  'instance_profile_arn': arn}
+                  'instance_profile_arn': arn,
+                  'placement': getCurrentAWSZone()}
         kwargs["subnet_id"] = self._getClusterInstance(self.instanceMetaData).subnet_id
 
         instancesLaunched = []
