@@ -89,7 +89,6 @@ class ResourceRequirement(object):
         """
         return self.cores
 
-
     def __gt__(self, other):
         """
         Returns True if self is greater than other, else returns False.
@@ -139,6 +138,12 @@ class ResourceRequirement(object):
 
     def __hash__(self):
         return hash((self.preemptable, self.cores, self.memory, self.disk))
+
+    def __str__(self):
+        return "{memory={memory}, cores={cores}, disk={disk}, preemptable={p}}".format(
+            memory=self.memory, cores=self.cores, disk=self.disk, p=self.preemptable)
+
+    __repr__ = __str__
 
 
 ToilJob = namedtuple('ToilJob', (
