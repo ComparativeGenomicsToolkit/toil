@@ -17,7 +17,10 @@ from __future__ import absolute_import
 import logging
 import math
 from collections import deque
-from threading import Lock
+from threading import Lock, Thread
+from flask import Flask
+from flask import request
+from flask import jsonify
 
 from bd2k.util.exceptions import require
 from bd2k.util.threading import ExceptionalThread
@@ -25,6 +28,9 @@ from bd2k.util.throttle import throttle
 
 from toil.batchSystems.abstractBatchSystem import AbstractScalableBatchSystem
 from toil.provisioners.abstractProvisioner import Shape
+
+scaler = None
+preemptableScaler = None
 
 logger = logging.getLogger(__name__)
 
@@ -39,6 +45,8 @@ logger = logging.getLogger(__name__)
 # non-preemptable nodes.
 
 _preemptableNodeDeficit = 0
+
+app = Flask('scalerParams')
 
 class RecentJobShapes(object):
     """
@@ -203,6 +211,33 @@ def binPacking(jobShapes, nodeShape):
                  "reservations.", nodeShape, len(jobShapes), len(nodeReservations))
     return len(nodeReservations)
 
+@app.route('/maxNodes', methods=['GET', 'PUT'])
+def maxNodes():
+    global scaler
+    if request.method == 'PUT':
+        scaler.maxNodes = int(request.json['maxNodes'])
+    return jsonify(maxNodes=scaler.maxNodes)
+
+@app.route('/minNodes', methods=['GET', 'PUT'])
+def minNodes():
+    global scaler
+    if request.method == 'PUT':
+        scaler.minNodes = int(request.json['minNodes'])
+    return jsonify(minNodes=scaler.minNodes)
+
+@app.route('/maxPreemptableNodes', methods=['GET', 'PUT'])
+def maxPreemptableNodes():
+    global preemptableScaler
+    if request.method == 'PUT':
+        preemptableScaler.maxNodes = int(request.json['maxNodes'])
+    return jsonify(maxNodes=preemptableScaler.maxNodes)
+
+@app.route('/minPreemptableNodes', methods=['GET', 'PUT'])
+def minPreemptableNodes():
+    global preemptableScaler
+    if request.method == 'PUT':
+        preemptableScaler.minNodes = int(request.json['minNodes'])
+    return jsonify(minNodes=preemptableScaler.minNodes)
 
 class ClusterScaler(object):
     def __init__(self, provisioner, leader, config):
@@ -227,7 +262,7 @@ class ClusterScaler(object):
         self.scaler = ScalerThread(self, preemptable=False) if self.config.maxNodes > 0 else None
 
     def start(self):
-        """ 
+        """
         Start the cluster scaler thread(s).
         """
         if self.preemptableScaler != None:
@@ -235,6 +270,15 @@ class ClusterScaler(object):
 
         if self.scaler != None:
             self.scaler.start()
+
+        global app
+        global scaler
+        global preemptableScaler
+        preemptableScaler = self.preemptableScaler
+        scaler = self.scaler
+        self.serve = Thread(target=lambda: app.run())
+        self.serve.daemon = True
+        self.serve.start()
 
     def check(self):
         """
@@ -358,7 +402,7 @@ class ScalerThread(ExceptionalThread):
                     logger.warn("Historical avg. runtime (%s) is less than current avg. runtime (%s) and cluster"
                                 " is being well utilised (%s running jobs), increasing cluster requirement by: %s" % 
                                 (historicalAvgRuntime, currentAvgRuntime, numberOfRunningJobs, runtimeCorrection))
-                    estimatedNodes = int(round(estimatedNodes * runtimeCorrection))
+                    #estimatedNodes = int(round(estimatedNodes * runtimeCorrection))
 
                 # If we're the non-preemptable scaler, we need to see if we have a deficit of
                 # preemptable nodes that we should compensate for.
@@ -409,7 +453,7 @@ class ScalerThread(ExceptionalThread):
                                 estimatedNodes, maxNodesNeededToFillQueue)
                     estimatedNodes = int(maxNodesNeededToFillQueue)
 
-                if estimatedNodes != self.totalNodes:
+                if True:
                     logger.info('Changing the number of %s from %s to %s.', self.nodeTypeString, self.totalNodes,
                                 estimatedNodes)
                     self.totalNodes = self.scaler.provisioner.setNodeCount(numNodes=estimatedNodes,
