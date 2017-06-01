@@ -145,7 +145,7 @@ class ResourceRequirement(object):
         return hash((self.preemptable, self.cores, self.memory, self.disk))
 
     def __str__(self):
-        return "{memory={memory}, cores={cores}, disk={disk}, preemptable={p}}".format(
+        return "memory={memory}, cores={cores}, disk={disk}, preemptable={p}".format(
             memory=self.memory, cores=self.cores, disk=self.disk, p=self.preemptable)
 
     __repr__ = __str__
