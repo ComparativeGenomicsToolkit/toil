@@ -23,12 +23,12 @@ sdistName = os.environ['_TOIL_SDIST_NAME']
 dependencies = ' '.join(['libffi-dev',  # For client side encryption for 'azure' extra with PyNACL
                          'python-dev',  # For installing Python packages with native code
                          'python-pip',  # Bootstrap pip, but needs upgrading, see below
-                         'libcurl4-openssl-dev',
+                         'libcurl4-nss-dev',
                          'libssl-dev',
                          'wget',
                          'curl',
                          'openssh-server',
-                         'mesos=1.0.1-2.0.93.ubuntu1404',
+                         'mesos=1.2.0-2.0.6',
                          "nodejs", # CWL support for javascript expressions
                          'rsync',
                          'screen'])
