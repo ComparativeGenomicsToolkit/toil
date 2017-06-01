@@ -335,6 +335,7 @@ def workerScript(jobStore, config, jobName, jobStoreID, redirectOutputToLogFile=
             jobs = jobGraph.stack[-1]
             assert len(jobs) > 0
             
+            break
             #If there are 2 or more jobs to run in parallel we quit
             if len(jobs) >= 2:
                 logger.debug("No more jobs can run in series by this worker,"
