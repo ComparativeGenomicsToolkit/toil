@@ -28,7 +28,7 @@ from io import BytesIO
 from pydoc import locate
 from tempfile import mkdtemp
 from urllib2 import HTTPError
-from zipfile import ZipFile, PyZipFile
+from zipfile import ZipFile
 
 # Python 3 compatibility imports
 from bd2k.util.retry import retry
@@ -243,7 +243,6 @@ class Resource(namedtuple('Resource', ('name', 'pathHash', 'url', 'contentHash')
         assert contentHash.hexdigest() == self.contentHash
         dstFile.write(buf)
 
-
 class FileResource(Resource):
     """
     A resource read from a file on the leader.
@@ -275,10 +274,12 @@ class DirectoryResource(Resource):
         :type path: str
         """
         bytesIO = BytesIO()
-        # PyZipFile compiles .py files on the fly, filters out any non-Python files and
-        # distinguishes between packages and simple directories.
-        with PyZipFile(file=bytesIO, mode='w') as zipFile:
-            zipFile.writepy(path)
+        with ZipFile(file=bytesIO, mode='w') as zipFile:
+            for dirName, _, fileList in os.walk(path):
+                zipFile.write(dirName)
+                for fileName in fileList:
+                    fullPath = os.path.join(dirName, fileName)
+                    zipFile.write(fullPath, os.path.relpath(fullPath, path))
         bytesIO.seek(0)
         return bytesIO
 
@@ -306,14 +307,12 @@ class VirtualEnvResource(DirectoryResource):
         sitePackages = path
         assert os.path.basename(sitePackages) == 'site-packages'
         bytesIO = BytesIO()
-        with PyZipFile(file=bytesIO, mode='w') as zipFile:
-            # This adds the .py files but omits subdirectories since site-packages is not a package
-            zipFile.writepy(sitePackages)
-            # Now add the missing packages
-            for name in os.listdir(sitePackages):
-                path = os.path.join(sitePackages, name)
-                if os.path.isdir(path) and os.path.isfile(os.path.join(path, '__init__.py')):
-                    zipFile.writepy(path)
+        with ZipFile(file=bytesIO, mode='w') as zipFile:
+            for dirName, _, fileList in os.walk(sitePackages):
+                zipFile.write(dirName)
+                for fileName in fileList:
+                    fullPath = os.path.join(dirName, fileName)
+                    zipFile.write(fullPath, os.path.relpath(fullPath, sitePackages))
         bytesIO.seek(0)
         return bytesIO
 
