@@ -104,6 +104,9 @@ class JobGraph(JobNode):
         self.remainingRetryCount = max(0, self.remainingRetryCount - 1)
         logger.warn("Due to failure we are reducing the remaining retry count of job %s with ID %s to %s",
                     self, self.jobStoreID, self.remainingRetryCount)
+        logger.info("Raising memory by %d" % (int(round(self._memory * 0.15))))
+        self._memory += int(round(self._memory * 0.15))
+        logger.info("Raising memory usage to %d" % self._memory)
         # Set the default memory to be at least as large as the default, in
         # case this was a malloc failure (we do this because of the combined
         # batch system)
