@@ -396,6 +396,8 @@ class ScalerThread(ExceptionalThread):
                 # Ratio of avg. runtime of currently running and completed jobs
                 runtimeCorrection = float(currentAvgRuntime)/historicalAvgRuntime if currentAvgRuntime > historicalAvgRuntime and numberOfRunningJobs >= estimatedNodes else 1.0
                 
+                logger.info('For scaler with preemptable = %s: minNodes = %s, maxNodes = %s.' % (self.preemptable, self.minNodes, self.maxNodes))
+
                 # Make correction, if necessary (only do so if cluster is busy and average runtime is higher than historical
                 # average)
                 if runtimeCorrection != 1.0:
@@ -447,11 +449,11 @@ class ScalerThread(ExceptionalThread):
                     estimatedNodes = self.minNodes
 
                 # Sanity check that we don't go way over the limit that we could possibly fill with jobs.
-                maxNodesNeededToFillQueue = math.ceil(float(queueSize) / self.nodeShape.cores)
-                if estimatedNodes >= maxNodesNeededToFillQueue:
-                    logger.info('Limiting the number of total nodes from %s to the amount needed to fill the current queue (%s)',
-                                estimatedNodes, maxNodesNeededToFillQueue)
-                    estimatedNodes = int(maxNodesNeededToFillQueue)
+                # maxNodesNeededToFillQueue = math.ceil(float(queueSize) / self.nodeShape.cores)
+                # if estimatedNodes >= maxNodesNeededToFillQueue:
+                #     logger.info('Limiting the number of total nodes from %s to the amount needed to fill the current queue (%s)',
+                #                 estimatedNodes, maxNodesNeededToFillQueue)
+                #     estimatedNodes = int(maxNodesNeededToFillQueue)
 
                 if True:
                     logger.info('Changing the number of %s from %s to %s.', self.nodeTypeString, self.totalNodes,
