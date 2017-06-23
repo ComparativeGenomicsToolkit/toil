@@ -264,8 +264,8 @@ class FileResource(Resource):
 class DirectoryResource(Resource):
     """
     A resource read from a directory on the leader. The URL will point to a ZIP archive of the
-    directory. Only Python script/modules will be included. The directory may be a package but it
-    does not need to be.
+    directory. All files in that directory (and any subdirectories) will be included. The directory
+    may be a package but it does not need to be.
     """
 
     @classmethod
@@ -274,12 +274,20 @@ class DirectoryResource(Resource):
         :type path: str
         """
         bytesIO = BytesIO()
+        initfile = os.path.join(path, '__init__.py')
+        if os.path.isfile(initfile):
+            # This is a package directory. To emulate
+            # PyZipFile.writepy's behavior, we need to keep everything
+            # relative to this path's parent directory.
+            rootDir = os.path.dirname(path)
+        else:
+            # This is a simple user script (with possibly a few helper files)
+            rootDir = path
         with ZipFile(file=bytesIO, mode='w') as zipFile:
             for dirName, _, fileList in os.walk(path):
-                zipFile.write(dirName)
                 for fileName in fileList:
                     fullPath = os.path.join(dirName, fileName)
-                    zipFile.write(fullPath, os.path.relpath(fullPath, path))
+                    zipFile.write(fullPath, os.path.relpath(fullPath, rootDir))
         bytesIO.seek(0)
         return bytesIO
 
@@ -298,21 +306,21 @@ class DirectoryResource(Resource):
 class VirtualEnvResource(DirectoryResource):
     """
     A resource read from a virtualenv on the leader. All modules and packages found in the
-    virtualenv's site-packages directory will be included. Any .pth or .egg-link files will be
-    ignored.
+    virtualenv's site-packages directory will be included.
     """
-
     @classmethod
     def _load(cls, path):
-        sitePackages = path
-        assert os.path.basename(sitePackages) == 'site-packages'
+        """
+        :type path: str
+        """
+        assert os.path.basename(path) == 'site-packages'
         bytesIO = BytesIO()
         with ZipFile(file=bytesIO, mode='w') as zipFile:
-            for dirName, _, fileList in os.walk(sitePackages):
+            for dirName, _, fileList in os.walk(path):
                 zipFile.write(dirName)
                 for fileName in fileList:
                     fullPath = os.path.join(dirName, fileName)
-                    zipFile.write(fullPath, os.path.relpath(fullPath, sitePackages))
+                    zipFile.write(fullPath, os.path.relpath(fullPath, path))
         bytesIO.seek(0)
         return bytesIO
 
@@ -371,7 +379,6 @@ class ModuleDescriptor(namedtuple('ModuleDescriptor', ('dirPath', 'name', 'fromV
         filePath[-1], extension = os.path.splitext(filePath[-1])
         require(extension in ('.py', '.pyc'),
                 'The name of a user script/module must end in .py or .pyc.')
-        log.debug("Module name is %s", name)
         if name == '__main__':
             log.debug("Discovering real name of module")
             # User script/module was invoked as the main program
@@ -392,6 +399,10 @@ class ModuleDescriptor(namedtuple('ModuleDescriptor', ('dirPath', 'name', 'fromV
                 cls._check_conflict(dirPath, name)
         else:
             # User module was imported. Determine the directory containing the top-level package
+            if filePath[-1] == '__init__':
+                # module is a subpackage
+                filePath.pop()
+
             for package in reversed(name.split('.')):
                 dirPathTail = filePath.pop()
                 assert dirPathTail == package

@@ -22,6 +22,7 @@ import time
 from abc import ABCMeta, abstractmethod
 from collections import namedtuple
 from Queue import Queue, Empty
+from contextlib import contextmanager
 
 from bd2k.util.objects import abstractclassmethod
 
@@ -82,7 +83,7 @@ class AbstractBatchSystem(object):
     def setUserScript(self, userScript):
         """
         Set the user script for this workflow. This method must be called before the first job is
-        issued to this batch system, and only if :meth:`supportsHotDeployment` returns True,
+        issued to this batch system, and only if :meth:`.supportsHotDeployment` returns True,
         otherwise it will raise an exception.
 
         :param toil.resource.Resource userScript: the resource object representing the user script
@@ -115,7 +116,8 @@ class AbstractBatchSystem(object):
         """
         Kills the given job IDs.
 
-        :param list[int] jobIDs: list of IDs of jobs to kill
+        :param jobIDs: list of IDs of jobs to kill
+        :type jobIDs: list[int]
         """
         raise NotImplementedError()
 
@@ -152,7 +154,7 @@ class AbstractBatchSystem(object):
 
         :param float maxWait: the number of seconds to block, waiting for a result
 
-        :rtype: (str, int)|None
+        :rtype: tuple(str, int) or None
         :return: If a result is available, returns a tuple (jobID, exitValue, wallTime).
                  Otherwise it returns None. wallTime is the number of seconds (a float) in
                  wall-clock time the job ran for or None if this batch system does not support
@@ -365,6 +367,38 @@ class AbstractScalableBatchSystem(AbstractBatchSystem):
                If None, all nodes will be returned.
 
         :rtype: dict[str,NodeInfo]
+        """
+        raise NotImplementedError()
+
+    @abstractmethod
+    def nodeInUse(self, nodeIP):
+        """
+        Can be used to determine if a worker node is running any tasks. If the node is doesn't
+        exist, this function should simply return False.
+
+        :param str nodeIP: The worker nodes private IP address
+
+        :return: True if the worker node has been issued any tasks, else False
+        :rtype: bool
+        """
+        raise NotImplementedError()
+
+    @abstractmethod
+    @contextmanager
+    def nodeFiltering(self, filter):
+        """
+        Used to prevent races in autoscaling where
+        1) nodes have reported to the autoscaler as having no jobs
+        2) scaler decides to terminate these nodes. In parallel the batch system assigns jobs to the same nodes
+        3) scaler terminates nodes, resulting in job failures for all jobs on that node.
+
+        Call this method prior to node termination to ensure that nodes being considered for termination are not
+        assigned new jobs. Call the method again passing None as the filter to disable the filtering
+        after node termination is done.
+
+        :param method: This will be used as a filter on nodes considered when assigning new jobs.
+            After this context manager exits the filter should be removed
+        :rtype: None
         """
         raise NotImplementedError()
 

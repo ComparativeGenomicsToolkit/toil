@@ -23,6 +23,7 @@ import subprocess
 import time
 from threading import Thread
 from datetime import date
+import os
 
 # Python 3 compatibility imports
 from six.moves.queue import Empty, Queue
@@ -38,6 +39,9 @@ def prepareBsub(cpu, mem):
     mem = '' if mem is None else '-R "select[type==X86_64 && mem > ' + str(int(mem/ 1000000)) + '] rusage[mem=' + str(int(mem/ 1000000)) + ']" -M' + str(int(mem/ 1000000)) + '000'
     cpu = '' if cpu is None else '-n ' + str(int(cpu))
     bsubline = ["bsub", mem, cpu,"-cwd", ".", "-o", "/dev/null", "-e", "/dev/null"]
+    lsfArgs = os.getenv('TOIL_LSF_ARGS')
+    if lsfArgs:
+        bsubline.extend(lsfArgs.split())
     return bsubline
 
 def bsub(bsubline):
@@ -213,7 +217,13 @@ class LSFBatchSystem(BatchSystemSupport):
         and a how long they have been running for (in seconds).
         """
         times = {}
-        currentjobs = set(self.lsfJobIDs[x] for x in self.getIssuedBatchJobIDs())
+        currentjobs = set()
+        for x in self.getIssuedBatchJobIDs():
+            if x in self.lsfJobIDs:
+                currentjobs.add(self.lsfJobIDs[x])
+            else:
+                #not yet started
+                pass
         process = subprocess.Popen(["bjobs"], stdout = subprocess.PIPE)
 
         for curline in process.stdout:
