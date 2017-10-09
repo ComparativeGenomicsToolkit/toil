@@ -57,7 +57,7 @@ motd = heredoc('''
 motd = ''.join(l + '\\n\\\n' for l in motd.splitlines())
 
 print(heredoc('''
-    FROM ubuntu:14.04
+    FROM ubuntu:16.04
 
     RUN echo "deb http://repos.mesosphere.io/ubuntu/ trusty main" \
         > /etc/apt/sources.list.d/mesosphere.list \
