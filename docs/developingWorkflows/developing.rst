@@ -1,6 +1,6 @@
 .. _tutorial-ref:
 
-Developing a workflow
+Developing a Workflow
 =====================
 
 This tutorial walks through the features of Toil necessary for developing a
@@ -526,6 +526,9 @@ This object is a small wrapper around Python's builtin string class. It is used 
 represent a file's ID in the file store, and has a ``size`` attribute that is the
 file's size in bytes. This object is returned by ``importFile`` and ``writeGlobalFile``.
 
+
+.. _managingFiles:
+
 Managing files within a workflow
 --------------------------------
 
@@ -599,12 +602,12 @@ example::
             fH.write("Out brief candle")
 
         # Now read the first file; scratchFile2 is a local copy of the file
-        # that is read only by default.
+        # that is read-only by default.
         scratchFile2 = job.fileStore.readGlobalFile(fileID)
 
         # Read the second file to a desired location: scratchFile3.
         scratchFile3 = os.path.join(job.fileStore.getLocalTempDir(), "foo.txt")
-        job.fileStore.readGlobalFile(fileID, userPath=scratchFile3)
+        job.fileStore.readGlobalFile(fileID2, userPath=scratchFile3)
 
         # Read the second file again using a stream.
         with job.fileStore.readGlobalFileStream(fileID2) as fH:
@@ -829,6 +832,8 @@ services can define sub-services using :func:`toil.job.Job.Service.addChild`.
 This allows complex networks of services to be created, e.g. Apache Spark
 clusters, within a workflow.
 
+
+.. _checkpoints:
 
 Checkpoints
 -----------

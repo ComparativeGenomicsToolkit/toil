@@ -14,6 +14,8 @@
 
 from __future__ import absolute_import
 
+from builtins import next
+from builtins import str
 import logging
 import multiprocessing
 import os
@@ -45,7 +47,9 @@ from bd2k.util.threading import ExceptionalThread
 
 from toil import toilPackageDirPath, applianceSelf
 from toil.version import distVersion
+from future.utils import with_metaclass
 
+logging.basicConfig(level=logging.DEBUG)
 log = logging.getLogger(__name__)
 
 
@@ -149,9 +153,9 @@ class ToilTest(unittest.TestCase):
     @classmethod
     def _createTempDirEx(cls, *names):
         prefix = ['toil', 'test', strclass(cls)]
-        prefix.extend(filter(None, names))
+        prefix.extend([_f for _f in names if _f])
         prefix.append('')
-        temp_dir_path = tempfile.mkdtemp(dir=cls._tempBaseDir, prefix='-'.join(prefix))
+        temp_dir_path = os.path.realpath(tempfile.mkdtemp(dir=cls._tempBaseDir, prefix='-'.join(prefix)))
         cls._tempDirs.append(temp_dir_path)
         return temp_dir_path
 
@@ -273,10 +277,8 @@ def needs_aws(test_item):
     """
     test_item = _mark_test('aws', test_item)
     keyName = os.getenv('TOIL_AWS_KEYNAME')
-    log.info('Checking keyname: %s', keyName)
     if not keyName or keyName is None:
         return unittest.skip("Set TOIL_AWS_KEYNAME to include this test.")(test_item)
-    log.info("NOPE %s" % keyName)
 
     try:
         # noinspection PyUnresolvedReferences
@@ -313,6 +315,9 @@ def needs_google(test_item):
     Use as a decorator before test classes or methods to only run them if Google Storage usable.
     """
     test_item = _mark_test('google', test_item)
+    projectID = os.getenv('TOIL_GOOGLE_PROJECTID')
+    if not projectID or projectID is None:
+        return unittest.skip("Set TOIL_GOOGLE_PROJECTID to include this test.")(test_item)
     try:
         # noinspection PyUnresolvedReferences
         from boto import config
@@ -333,6 +338,10 @@ def needs_azure(test_item):
     Use as a decorator before test classes or methods to only run them if Azure is usable.
     """
     test_item = _mark_test('azure', test_item)
+    keyName = os.getenv('TOIL_AZURE_KEYNAME')
+    if not keyName or keyName is None:
+        return unittest.skip("Set TOIL_AZURE_KEYNAME to include this test.")(test_item)
+
     try:
         # noinspection PyUnresolvedReferences
         import azure.storage
@@ -379,6 +388,7 @@ def needs_mesos(test_item):
     try:
         # noinspection PyUnresolvedReferences
         import mesos.native
+        import psutil
     except ImportError:
         return unittest.skip(
             "Install Mesos (and Toil with the 'mesos' extra) to include this test.")(test_item)
@@ -448,6 +458,8 @@ def needs_cwl(test_item):
 def needs_appliance(test_item):
     import json
     test_item = _mark_test('appliance', test_item)
+    if less_strict_bool(os.getenv('TOIL_SKIP_DOCKER')):
+        return unittest.skip('Skipping docker test.')(test_item)
     if next(which('docker'), None):
         image = applianceSelf()
         try:
@@ -457,7 +469,8 @@ def needs_appliance(test_item):
         else:
             images = {i['Id'] for i in json.loads(images) if image in i['RepoTags']}
         if len(images) == 0:
-            return unittest.skip("Cannot find appliance image %s. Be sure to run 'make docker' "
+            return unittest.skip("Cannot find appliance image %s. Use 'make test' target to "
+                                 "automatically build appliance, or just run 'make docker' "
                                  "prior to running this test." % image)(test_item)
         elif len(images) == 1:
             return test_item
@@ -496,8 +509,20 @@ def integrative(test_item):
         return test_item
     else:
         return unittest.skip(
-            'Set TOIL_TEST_INTEGRATIVE="True" to include this integration test.')(test_item)
+            'Set TOIL_TEST_INTEGRATIVE="True" to include this integration test, '
+            'or run `make integration_test_local` to run all integration tests.')(test_item)
 
+def slow(test_item):
+    """
+    Use this decorator to identify tests that are slow and not critical.
+    Skip them if TOIL_TEST_QUICK is true.
+    """
+    test_item = _mark_test('slow', test_item)
+    if not less_strict_bool(os.getenv('TOIL_TEST_QUICK')):
+        return test_item
+    else:
+        return unittest.skip(
+            'Skipped because TOIL_TEST_QUICK is "True"')(test_item)
 
 methodNamePartRegex = re.compile('^[a-zA-Z_0-9]+$')
 
@@ -536,7 +561,7 @@ def timeLimit(seconds):
 # FIXME: move to bd2k-python-lib
 
 
-def make_tests(generalMethod, targetClass=None, **kwargs):
+def make_tests(generalMethod, targetClass, **kwargs):
     """
     This method dynamically generates test methods using the generalMethod as a template. Each
     generated function is the result of a unique combination of parameters applied to the
@@ -568,7 +593,7 @@ def make_tests(generalMethod, targetClass=None, **kwargs):
     >>> class Bar(Foo):
     ...     pass
 
-    >>> make_tests(Foo.has, targetClass=Bar, num={'one':1, 'two':2}, letter={'a':'a', 'b':'b'})
+    >>> make_tests(Foo.has, Bar, num={'one':1, 'two':2}, letter={'a':'a', 'b':'b'})
 
     >>> b = Bar()
 
@@ -585,27 +610,7 @@ def make_tests(generalMethod, targetClass=None, **kwargs):
     >>> hasattr(f, 'test_has__num_one__letter_a')  # should be false because Foo has no test methods
     False
 
-    >>> make_tests(Foo.has, num={'one':1, 'two':2}, letter={'a':'a', 'b':'b'})
-
-    >>> hasattr(f, 'test_has__num_one__letter_a')
-    True
-
-    >>> assert f.test_has__num_one__letter_a() == f.has(1, 'a')
-
-    >>> assert f.test_has__num_one__letter_b() == f.has(1, 'b')
-
-    >>> assert f.test_has__num_two__letter_a() == f.has(2, 'a')
-
-    >>> assert f.test_has__num_two__letter_b() == f.has(2, 'b')
-
-    >>> make_tests(Foo.hasOne, num={'one':1, 'two':2})
-
-    >>> assert f.test_hasOne__num_one() == f.hasOne(1)
-
-    >>> assert f.test_hasOne__num_two() == f.hasOne(2)
-
     """
-
     def pop(d):
         """
         Pops an arbitrary key value pair from a given dict.
@@ -641,8 +646,8 @@ def make_tests(generalMethod, targetClass=None, **kwargs):
         :param right: A dict that pairs 1 or more valueNames and values for the rParamName
                parameter.
         """
-        for prmValName, lDict in left.items():
-            for rValName, rVal in right.items():
+        for prmValName, lDict in list(left.items()):
+            for rValName, rVal in list(right.items()):
                 nextPrmVal = ('__%s_%s' % (rParamName, rValName.lower()))
                 if methodNamePartRegex.match(nextPrmVal) is None:
                     raise RuntimeError("The name '%s' cannot be used in a method name" % pvName)
@@ -668,7 +673,7 @@ def make_tests(generalMethod, targetClass=None, **kwargs):
         # create first left dict
         left = {}
         prmName, vals = pop(kwargs)
-        for valName, val in vals.items():
+        for valName, val in list(vals.items()):
             pvName = '__%s_%s' % (prmName, valName.lower())
             if methodNamePartRegex.match(pvName) is None:
                 raise RuntimeError("The name '%s' cannot be used in a method name" % pvName)
@@ -679,8 +684,8 @@ def make_tests(generalMethod, targetClass=None, **kwargs):
             permuteIntoLeft(left, *pop(kwargs))
 
         # set class attributes
-        targetClass = targetClass or generalMethod.im_class
-        for prmNames, prms in left.items():
+        targetClass = targetClass or generalMethod.__class__
+        for prmNames, prms in list(left.items()):
             insertMethodToClass()
     else:
         prms = None
@@ -736,9 +741,7 @@ class ApplianceTestSupport(ToilTest):
             with self.WorkerThread(self, mounts, numCores) as worker:
                 yield leader, worker
 
-    class Appliance(ExceptionalThread):
-        __metaclass__ = ABCMeta
-
+    class Appliance(with_metaclass(ABCMeta, ExceptionalThread)):
         @abstractmethod
         def _getRole(self):
             return 'leader'

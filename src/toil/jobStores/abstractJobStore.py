@@ -13,6 +13,11 @@
 # limitations under the License.
 from __future__ import absolute_import
 
+from future import standard_library
+standard_library.install_aliases()
+from builtins import str
+from builtins import map
+from builtins import object
 import shutil
 
 import re
@@ -32,11 +37,12 @@ from toil.fileStore import FileID
 from toil.job import JobException
 from bd2k.util import memoize
 from bd2k.util.objects import abstractclassmethod
+from future.utils import with_metaclass
 
 try:
-    import cPickle
+    import cPickle as pickle
 except ImportError:
-    import pickle as cPickle
+    import pickle
 
 import logging
 
@@ -101,11 +107,10 @@ class JobStoreExistsException(Exception):
             "the job store with 'toil clean' to start the workflow from scratch" % locator)
 
 
-class AbstractJobStore(object):
+class AbstractJobStore(with_metaclass(ABCMeta, object)):
     """
     Represents the physical storage for the jobs and files in a Toil workflow.
     """
-    __metaclass__ = ABCMeta
 
     def __init__(self):
         """
@@ -138,7 +143,7 @@ class AbstractJobStore(object):
         job store, so that it can be retrieved later by other instances of this class.
         """
         with self.writeSharedFileStream('config.pickle', isProtected=False) as fileHandle:
-            cPickle.dump(self.__config, fileHandle, cPickle.HIGHEST_PROTOCOL)
+            pickle.dump(self.__config, fileHandle, pickle.HIGHEST_PROTOCOL)
 
     def resume(self):
         """
@@ -148,7 +153,7 @@ class AbstractJobStore(object):
         :raises NoSuchJobStoreException: if the physical storage for this job store doesn't exist
         """
         with self.readSharedFileStream('config.pickle') as fileHandle:
-            config = cPickle.load(fileHandle)
+            config = pickle.load(fileHandle)
             assert config.workflowID is not None
             self.__config = config
 
@@ -202,6 +207,16 @@ class AbstractJobStore(object):
         rootJob = self.create(*args, **kwargs)
         self.setRootJob(rootJob.jobStoreID)
         return rootJob
+
+    def getRootJobReturnValue(self):
+        """
+        Parse the return value from the root job.
+
+        Raises an exception if the root job hasn't fulfilled its promise yet.
+        """
+        # Parse out the return value from the root job
+        with self.readSharedFileStream('rootJobReturnValue') as fH:
+            return pickle.load(fH)
 
     @property
     @memoize
@@ -312,7 +327,7 @@ class AbstractJobStore(object):
         """
         Exports file to destination pointed at by the destination URL.
 
-        Refer to :meth:`.importFile` documentation for currently supported URL schemes.
+        Refer to :meth:`.AbstractJobStore.importFile` documentation for currently supported URL schemes.
 
         Note that the helper method _exportFile is used to read from the source and write to
         destination. To implement any optimizations that circumvent this, the _exportFile method
@@ -324,7 +339,7 @@ class AbstractJobStore(object):
         """
         dstUrl = urlparse.urlparse(dstUrl)
         otherCls = self._findJobStoreForUrl(dstUrl, export=True)
-        return self._exportFile(otherCls, jobStoreFileID, dstUrl)
+        self._exportFile(otherCls, jobStoreFileID, dstUrl)
 
     def _exportFile(self, otherCls, jobStoreFileID, url):
         """
@@ -445,7 +460,7 @@ class AbstractJobStore(object):
 
         def haveJob(jobId):
             if jobCache is not None:
-                if jobCache.has_key(jobId):
+                if jobId in jobCache:
                     return True
                 else:
                     return self.exists(jobId)
@@ -468,13 +483,13 @@ class AbstractJobStore(object):
             reachableFromRoot.add(jobGraph.jobStoreID)
             # Traverse jobs in stack
             for jobs in jobGraph.stack:
-                for successorJobStoreID in map(lambda x: x.jobStoreID, jobs):
+                for successorJobStoreID in [x.jobStoreID for x in jobs]:
                     if (successorJobStoreID not in reachableFromRoot
                         and haveJob(successorJobStoreID)):
                         getConnectedJobs(getJob(successorJobStoreID))
             # Traverse service jobs
             for jobs in jobGraph.services:
-                for serviceJobStoreID in map(lambda x: x.jobStoreID, jobs):
+                for serviceJobStoreID in [x.jobStoreID for x in jobs]:
                     if haveJob(serviceJobStoreID):
                         assert serviceJobStoreID not in reachableFromRoot
                         reachableFromRoot.add(serviceJobStoreID)
@@ -484,7 +499,7 @@ class AbstractJobStore(object):
         logger.info("%d jobs reachable from root." % len(reachableFromRoot))
 
         # Cleanup jobs that are not reachable from the root, and therefore orphaned
-        jobsToDelete = filter(lambda x: x.jobStoreID not in reachableFromRoot, getJobs())
+        jobsToDelete = [x for x in getJobs() if x.jobStoreID not in reachableFromRoot]
         for jobGraph in jobsToDelete:
             # clean up any associated files before deletion
             for fileID in jobGraph.filesToDelete:
@@ -495,8 +510,26 @@ class AbstractJobStore(object):
             # Delete the job
             self.delete(jobGraph.jobStoreID)
 
+        jobGraphsReachableFromRoot = {id: getJob(id) for id in reachableFromRoot}
+
+        # Clean up any checkpoint jobs -- delete any successors it
+        # may have launched, and restore the job to a pristine
+        # state
+        jobsDeletedByCheckpoints = set()
+        for jobGraph in [jG for jG in jobGraphsReachableFromRoot.values() if jG.checkpoint is not None]:
+            if jobGraph.jobStoreID in jobsDeletedByCheckpoints:
+                # This is a checkpoint that was nested within an
+                # earlier checkpoint, so it and all its successors are
+                # already gone.
+                continue
+            logger.info("Restarting checkpointed job %s" % jobGraph)
+            deletedThisRound = jobGraph.restartCheckpoint(self)
+            jobsDeletedByCheckpoints |= set(deletedThisRound)
+        for jobID in jobsDeletedByCheckpoints:
+            del jobGraphsReachableFromRoot[jobID]
+
         # Clean up jobs that are in reachable from the root
-        for jobGraph in (getJob(x) for x in reachableFromRoot):
+        for jobGraph in jobGraphsReachableFromRoot.values():
             # jobGraphs here are necessarily in reachable from root.
 
             changed = [False]  # This is a flag to indicate the jobGraph state has
@@ -519,10 +552,9 @@ class AbstractJobStore(object):
                 stackSizeFn = lambda: sum(map(len, jobGraph.stack))
                 startStackSize = stackSizeFn()
                 # Remove deleted jobs
-                jobGraph.stack = map(lambda x: filter(lambda y: self.exists(y.jobStoreID), x),
-                                       jobGraph.stack)
+                jobGraph.stack = [[y for y in x if self.exists(y.jobStoreID)] for x in jobGraph.stack]
                 # Remove empty stuff from the stack
-                jobGraph.stack = filter(lambda x: len(x) > 0, jobGraph.stack)
+                jobGraph.stack = [x for x in jobGraph.stack if len(x) > 0]
                 # Check if anything got removed
                 if stackSizeFn() != startStackSize:
                     changed[0] = True
@@ -575,11 +607,11 @@ class AbstractJobStore(object):
             services = jobGraph.services
             jobGraph.services = []
             for serviceList in services:
-                existingServices = filter(lambda service: self.exists(service.jobStoreID), serviceList)
+                existingServices = [service for service in serviceList if self.exists(service.jobStoreID)]
                 if existingServices:
                     jobGraph.services.append(existingServices)
 
-            map(lambda serviceList: map(replaceFlagsIfNeeded, serviceList), jobGraph.services)
+            list(map(lambda serviceList: list(map(replaceFlagsIfNeeded, serviceList)), jobGraph.services))
 
             if servicesSizeFn() != startServicesSize:
                 changed[0] = True
@@ -618,6 +650,16 @@ class AbstractJobStore(object):
     # The following methods deal with creating/loading/updating/writing/checking for the
     # existence of jobs
     ##########################################
+
+    @contextmanager
+    def batch(self):
+        """
+        All calls to create() with this context manager active will be performed in a batch
+        after the context manager is released.
+
+        :rtype: None
+        """
+        yield
 
     @abstractmethod
     def create(self, jobNode):
@@ -965,9 +1007,7 @@ class AbstractJobStore(object):
             raise ValueError("Not a valid shared file name: '%s'." % sharedFileName)
 
 
-class JobStoreSupport(AbstractJobStore):
-    __metaclass__ = ABCMeta
-
+class JobStoreSupport(with_metaclass(ABCMeta, AbstractJobStore)):
     @classmethod
     def _supportsUrl(cls, url, export=False):
         return url.scheme.lower() in ('http', 'https', 'ftp') and not export

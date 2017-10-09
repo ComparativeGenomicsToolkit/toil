@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 from __future__ import absolute_import
+from builtins import range
 import random
 import os
 import errno
@@ -21,7 +22,7 @@ from six.moves import xrange
 
 from toil.common import Toil
 from toil.job import Job
-from toil.test import ToilTest
+from toil.test import ToilTest, slow
 
 PREFIX_LENGTH=200
 
@@ -43,6 +44,22 @@ class JobFileStoreTest(ToilTest):
         with Toil(options) as workflow:
             workflow.start(Job.wrapJobFn(simpleFileStoreJob))
 
+    def testImportLinking(self):
+        """
+        importFile will link instead of copying to jobStore in ``--linkImports`` option is specified.
+        we want to test this behavior
+        """
+        options = Job.Runner.getDefaultOptions(self._getTestJobStorePath())
+        options.linkImports = True
+        tempDir = self._createTempDir('testImportLinking')
+        fileName = os.path.join(tempDir, 'dummyFile.txt')
+        with open(fileName, 'w') as fh:
+            fh.write('Subtle literature reference.')
+        with Toil(options) as workflow:
+            fileID = workflow.importFile('file://' + os.path.abspath(fileName))
+            workflow.start(Job.wrapJobFn(compareiNodes, fileID, os.path.abspath(fileName)))
+        os.remove(fileName)
+
     def _testJobFileStore(self, retryCount=0, badWorker=0.0, stringNo=1, stringLength=1000000,
                           testNo=2):
         """
@@ -50,15 +67,15 @@ class JobFileStoreTest(ToilTest):
         toil.fileStore.FileStore interface. Verifies the files written are always what we
         expect.
         """
-        for test in xrange(testNo):
+        for test in range(testNo):
             #Make a list of random strings, each of 100k chars and hash the first 200 
             #base prefix to the string
             def randomString():
                 chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
-                s = "".join(map(lambda i : random.choice(chars), xrange(stringLength)))
+                s = "".join([random.choice(chars) for i in range(stringLength)])
                 return s[:PREFIX_LENGTH], s
             #Total length is 2 million characters (20 strings of length 100K each) 
-            testStrings = dict(map(lambda i : randomString(), xrange(stringNo)))
+            testStrings = dict([randomString() for i in range(stringNo)])
             options = Job.Runner.getDefaultOptions(self._getTestJobStorePath())
             options.logLevel = "INFO"
             options.retryCount=retryCount
@@ -75,7 +92,8 @@ class JobFileStoreTest(ToilTest):
         Tests case that about half the files are cached
         """
         self._testJobFileStore(retryCount=0, badWorker=0.0,  stringNo=5, stringLength=1000000)
-    
+
+    @slow
     def testJobFileStoreWithBadWorker(self):
         """
         Tests case that about half the files are cached and the worker is randomly
@@ -120,7 +138,7 @@ def fileTestJob(job, inputFileStoreIDs, testStrings, chainLength):
     #exercising different ways of writing files to the file store
     while len(outputFileStoreIds) < len(testStrings):
         #Pick a string and write it into a file
-        testString = random.choice(testStrings.values())
+        testString = random.choice(list(testStrings.values()))
         if random.random() > 0.5:
             #Make a local copy of the file
             tempFile = job.fileStore.getLocalTempFile() if random.random() > 0.5 \
@@ -180,3 +198,11 @@ def fileStoreChild(job, testID1, testID2):
 
     for fileID in (testID1, testID2):
         job.fileStore.deleteGlobalFile(fileID)
+
+
+def compareiNodes(job, importedFileID, importedFilePath):
+    localFilePath = os.path.join(job.fileStore.getLocalTempDir(), "childTemp.txt")
+    job.fileStore.readGlobalFile(importedFileID, localFilePath)
+    localiNodeNo = os.stat(localFilePath).st_ino
+    importediNodeNo = os.stat(importedFilePath).st_ino
+    assert localiNodeNo == importediNodeNo

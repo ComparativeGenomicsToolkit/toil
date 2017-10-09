@@ -3,37 +3,37 @@ from argparse import ArgumentParser
 import os
 import logging
 import random
-import shutil
 
+from toil.common import Toil
 from toil.job import Job
 
 
-def setup(job, input_file, n, down_checkpoints):
+def setup(job, input_file_id, n, down_checkpoints):
     """Sets up the sort.
+    Returns the FileID of the sorted file
     """
     # Write the input file to the file store
-    input_filestore_id = job.fileStore.writeGlobalFile(input_file, True)
-    job.fileStore.logToMaster(" Starting the merge sort ")
-    job.addFollowOnJobFn(cleanup, job.addChildJobFn(down,
-                                                    input_filestore_id, n,
-                                                    down_checkpoints=down_checkpoints,
-                                                    memory='1000M').rv(), input_file)
+    job.fileStore.logToMaster("Starting the merge sort")
+    return job.addChildJobFn(down,
+                             input_file_id, n,
+                             down_checkpoints=down_checkpoints,
+                             memory='1000M').rv()
 
 
-def down(job, input_file_store_id, n, down_checkpoints):
+def down(job, input_file_id, n, down_checkpoints):
     """Input is a file and a range into that file to sort and an output location in which
     to write the sorted file.
     If the range is larger than a threshold N the range is divided recursively and
-    a follow on job is then created which merges back the results else
+    a follow on job is then created which merges back the results. Otherwise,
     the file is sorted and placed in the output.
     """
     # Read the file
-    input_file = job.fileStore.readGlobalFile(input_file_store_id, cache=False)
+    input_file = job.fileStore.readGlobalFile(input_file_id, cache=False)
     length = os.path.getsize(input_file)
     if length > n:
         # We will subdivide the file
         job.fileStore.logToMaster("Splitting file: %s of size: %s"
-                                  % (input_file_store_id, length), level=logging.CRITICAL)
+                                  % (input_file_id, length), level=logging.CRITICAL)
         # Split the file into two copies
         mid_point = get_midpoint(input_file, 0, length)
         t1 = job.fileStore.getLocalTempFile()
@@ -42,7 +42,8 @@ def down(job, input_file_store_id, n, down_checkpoints):
         t2 = job.fileStore.getLocalTempFile()
         with open(t2, 'w') as fH:
             copy_subrange_of_file(input_file, mid_point + 1, length, fH)
-        # Call down recursively
+
+        # Call the down function recursively
         return job.addFollowOnJobFn(up, job.addChildJobFn(down, job.fileStore.writeGlobalFile(t1), n,
                                     down_checkpoints=down_checkpoints, memory='1000M').rv(),
                                     job.addChildJobFn(down, job.fileStore.writeGlobalFile(t2), n,
@@ -51,7 +52,7 @@ def down(job, input_file_store_id, n, down_checkpoints):
     else:
         # We can sort this bit of the file
         job.fileStore.logToMaster("Sorting file: %s of size: %s"
-                                  % (input_file_store_id, length), level=logging.CRITICAL)
+                                  % (input_file_id, length), level=logging.CRITICAL)
         # Sort the copy and write back to the fileStore
         output_file = job.fileStore.getLocalTempFile()
         sort(input_file, output_file)
@@ -64,22 +65,14 @@ def up(job, input_file_id_1, input_file_id_2):
     with job.fileStore.writeGlobalFileStream() as (fileHandle, output_id):
         with job.fileStore.readGlobalFileStream(input_file_id_1) as inputFileHandle1:
             with job.fileStore.readGlobalFileStream(input_file_id_2) as inputFileHandle2:
-                merge(inputFileHandle1, inputFileHandle2, fileHandle)
                 job.fileStore.logToMaster("Merging %s and %s to %s"
                                           % (input_file_id_1, input_file_id_2, output_id))
+                merge(inputFileHandle1, inputFileHandle2, fileHandle)
+
         # Cleanup up the input files - these deletes will occur after the completion is successful.
         job.fileStore.deleteGlobalFile(input_file_id_1)
         job.fileStore.deleteGlobalFile(input_file_id_2)
         return output_id
-
-
-def cleanup(job, temp_output_id, output_file):
-    """Copies back the temporary file to input once we've successfully sorted the temporary file.
-    """
-    tempFile = job.fileStore.readGlobalFile(temp_output_id)
-    shutil.copy(tempFile, output_file)
-    os.chmod(output_file, 0o644)
-    job.fileStore.logToMaster("Finished copying sorted file to output: %s" % output_file)
 
 
 # convenience functions
@@ -163,11 +156,17 @@ def main():
     if int(options.N) <= 0:
         raise RuntimeError("Invalid value of N: %s" % options.N)
 
-    make_file_to_sort(file_name='file_to_sort.txt', lines=options.num_lines, line_length=options.line_length)
+    file_name = 'file_to_sort.txt'
+    make_file_to_sort(file_name=file_name, lines=options.num_lines, line_length=options.line_length)
 
-    # Now we are ready to run
-    Job.Runner.startToil(Job.wrapJobFn(setup, os.path.abspath('file_to_sort.txt'), int(options.N), False,
-                                       memory='1000M'), options)
+    with Toil(options) as toil:
+        sort_file_url = 'file://' + os.path.abspath('file_to_sort.txt')
+        if not toil.options.restart:
+            sort_file_id = toil.importFile(sort_file_url)
+            sorted_file_id = toil.start(Job.wrapJobFn(setup, sort_file_id, int(options.N), False, memory='1000M'))
+        else:
+            sorted_file_id = toil.restart()
+        toil.exportFile(sorted_file_id, sort_file_url)
 
 if __name__ == '__main__':
     main()

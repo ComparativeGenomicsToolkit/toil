@@ -13,9 +13,17 @@
 # limitations under the License.
 
 from __future__ import absolute_import
+from __future__ import division
 
+from future import standard_library
+standard_library.install_aliases()
+from builtins import next
+from builtins import str
+from builtins import range
+from past.utils import old_div
+from builtins import object
+import socketserver
 import pytest
-import SocketServer
 import hashlib
 import logging
 import threading
@@ -56,7 +64,9 @@ from toil.test import (ToilTest,
                        needs_encryption,
                        make_tests,
                        needs_google,
+                       slow,
                        experimental)
+from future.utils import with_metaclass
 
 logger = logging.getLogger(__name__)
 
@@ -65,16 +75,14 @@ def tearDownModule():
     AbstractJobStoreTest.Test.cleanUpExternalStores()
 
 
-class AbstractJobStoreTest:
+class AbstractJobStoreTest(object):
     """
     Hide abstract base class from unittest's test case loader
 
     http://stackoverflow.com/questions/1323455/python-unit-test-with-base-and-sub-class#answer-25695512
     """
 
-    class Test(ToilTest):
-        __metaclass__ = ABCMeta
-
+    class Test(with_metaclass(ABCMeta, ToilTest)):
         @classmethod
         def setUpClass(cls):
             super(AbstractJobStoreTest.Test, cls).setUpClass()
@@ -362,6 +370,19 @@ class AbstractJobStoreTest:
             self.assertFalse(master.exists(jobOnMaster.jobStoreID))
             # TODO: Who deletes the shared files?
 
+        def testBatchCreate(self):
+            master = self.master
+            masterRequirements = dict(memory=12, cores=34, disk=35, preemptable=True)
+            jobGraphs = []
+            with master.batch():
+                for i in range(100):
+                    overlargeJobNodeOnMaster = JobNode(command='master-overlarge',
+                                        requirements=masterRequirements,
+                                        jobName='test-overlarge', unitName='onMaster',
+                                        jobStoreID=None, predecessorNumber=0)
+                    jobGraphs.append(master.create(overlargeJobNodeOnMaster))
+            for jobGraph in jobGraphs:
+                self.assertTrue(master.exists(jobGraph.jobStoreID))
 
         def _prepareTestFile(self, store, size=None):
             """
@@ -453,7 +474,7 @@ class AbstractJobStoreTest:
                 self.assertEqual(fileMD5, other._hashTestFile(dstUrl))
 
             make_tests(testImportExportFile,
-                       targetClass=cls,
+                       cls,
                        otherCls=activeTestClassesByName,
                        size=dict(zero=0,
                                  one=1,
@@ -482,11 +503,11 @@ class AbstractJobStoreTest:
                 self.assertEqual(fileMD5, srcMd5)
 
             make_tests(testImportSharedFile,
-                       targetClass=cls,
+                       cls,
                        otherCls=activeTestClassesByName)
 
         def testImportHttpFile(self):
-            http = SocketServer.TCPServer(('', 0), StubHttpRequestHandler)
+            http = socketserver.TCPServer(('', 0), StubHttpRequestHandler)
             try:
                 httpThread = threading.Thread(target=http.serve_forever)
                 httpThread.start()
@@ -514,6 +535,7 @@ class AbstractJobStoreTest:
             finally:
                 ftp.stop()
 
+        @slow
         def testFileDeletion(self):
             """
             Intended to cover the batch deletion of items in the AWSJobStore, but it doesn't hurt
@@ -523,12 +545,13 @@ class AbstractJobStoreTest:
             n = self._batchDeletionSize()
             for numFiles in (1, n - 1, n, n + 1, 2 * n):
                 job = master.create(self.arbitraryJob)
-                fileIDs = [master.getEmptyFileStoreID(job.jobStoreID) for _ in xrange(0, numFiles)]
+                fileIDs = [master.getEmptyFileStoreID(job.jobStoreID) for _ in range(0, numFiles)]
                 master.delete(job.jobStoreID)
                 for fileID in fileIDs:
                     # NB: the fooStream() methods return context managers
                     self.assertRaises(NoSuchFileException, master.readFileStream(fileID).__enter__)
 
+        @slow
         def testMultipartUploads(self):
             """
             This test is meant to cover multi-part uploads in the AWSJobStore but it doesn't hurt
@@ -625,12 +648,13 @@ class AbstractJobStoreTest:
                 self.assertEquals(f.read(), "")
             self.master.delete(job.jobStoreID)
 
+        @slow
         def testLargeFile(self):
             dirPath = self._createTempDir()
             filePath = os.path.join(dirPath, 'large')
             hashIn = hashlib.md5()
             with open(filePath, 'w') as f:
-                for i in xrange(0, 10):
+                for i in range(0, 10):
                     buf = os.urandom(self._partSize())
                     f.write(buf)
                     hashIn.update(buf)
@@ -657,6 +681,7 @@ class AbstractJobStoreTest:
                 except:
                     self.fail()
 
+        @slow
         def testCleanCache(self):
             # Make a bunch of jobs
             master = self.master
@@ -739,6 +764,7 @@ class AbstractJobStoreTest:
             """
             raise NotImplementedError()
 
+        @slow
         def testDestructionOfCorruptedJobStore(self):
             self._corruptJobStore()
             worker = self._createJobStore()
@@ -780,13 +806,12 @@ class AbstractJobStoreTest:
             return 5 * 1024 * 1024
 
 
-class AbstractEncryptedJobStoreTest:
+class AbstractEncryptedJobStoreTest(object):
     # noinspection PyAbstractClass
-    class Test(AbstractJobStoreTest.Test):
+    class Test(with_metaclass(ABCMeta, AbstractJobStoreTest.Test)):
         """
         A test of job stores that use encryption
         """
-        __metaclass__ = ABCMeta
 
         def setUp(self):
             # noinspection PyAttributeOutsideInit
@@ -851,7 +876,7 @@ class FileJobStoreTest(AbstractJobStoreTest.Test):
 @experimental
 @needs_google
 class GoogleJobStoreTest(AbstractJobStoreTest.Test):
-    projectID = 'cgc-05-0006'
+    projectID = os.getenv('TOIL_GOOGLE_PROJECTID')
     headers = {"x-goog-project-id": projectID}
 
     def _createJobStore(self):
@@ -931,6 +956,7 @@ class AWSJobStoreTest(AbstractJobStoreTest.Test):
         from boto.sdb import connect_to_region
         from boto.s3.connection import Location, S3Connection
         from toil.jobStores.aws.jobStore import BucketLocationConflictException
+        from toil.jobStores.aws.utils import retry_s3
         externalAWSLocation = Location.USWest
         for testRegion in 'us-east-1', 'us-west-2':
             # We run this test twice, once with the default s3 server us-east-1 as the test region
@@ -940,8 +966,10 @@ class AWSJobStoreTest(AbstractJobStoreTest.Test):
             testJobStoreUUID = str(uuid.uuid4())
             # Create the nucket at the external region
             s3 = S3Connection()
-            bucket = s3.create_bucket('domain-test-' + testJobStoreUUID + '--files',
-                                      location=externalAWSLocation)
+            for attempt in retry_s3(delays=(2,5,10,30,60), timeout=600):
+                with attempt:
+                    bucket = s3.create_bucket('domain-test-' + testJobStoreUUID + '--files',
+                                              location=externalAWSLocation)
             options = Job.Runner.getDefaultOptions('aws:' + testRegion + ':domain-test-' +
                                                    testJobStoreUUID)
             options.logLevel = 'DEBUG'
@@ -964,14 +992,17 @@ class AWSJobStoreTest(AbstractJobStoreTest.Test):
             else:
                 self.fail()
             finally:
-                s3.delete_bucket(bucket=bucket)
+                for attempt in retry_s3():
+                    with attempt:
+                        s3.delete_bucket(bucket=bucket)
 
+    @slow
     def testInlinedFiles(self):
         from toil.jobStores.aws.jobStore import AWSJobStore
         master = self.master
         for encrypted in (True, False):
             n = AWSJobStore.FileInfo.maxInlinedSize(encrypted)
-            sizes = (1, n / 2, n - 1, n, n + 1, 2 * n)
+            sizes = (1, old_div(n, 2), n - 1, n, n + 1, 2 * n)
             for size in chain(sizes, islice(reversed(sizes), 1)):
                 s = os.urandom(size)
                 with master.writeSharedFileStream('foo') as f:
@@ -987,6 +1018,7 @@ class AWSJobStoreTest(AbstractJobStoreTest.Test):
             args, kwargs = mock_log.warn.call_args
             self.assertTrue('Could not determine location' in args[0])
 
+    @slow
     def testMultiPartImportFailures(self):
         # This should be less than the number of threads in the pool used by the MP copy.
         num_parts = 10
@@ -999,7 +1031,7 @@ class AWSJobStoreTest(AbstractJobStoreTest.Test):
             # latter to bail out immediatly and failing the assertion that ensure the number of
             # failing tasks.
             time.sleep(.25)
-            if i.next() % 2 == 0:
+            if next(i) % 2 == 0:
                 raise RuntimeError()
 
         with patch('boto.s3.multipart.MultiPartUpload.copy_part_from_key',
@@ -1010,7 +1042,7 @@ class AWSJobStoreTest(AbstractJobStoreTest.Test):
             try:
                 self.master.importFile(url)
             except RuntimeError as e:
-                self.assertEquals(e.message, 'Failed to copy at least %d part(s)' % (num_parts / 2))
+                self.assertEquals(e.message, 'Failed to copy at least %d part(s)' % (old_div(num_parts, 2)))
             else:
                 self.fail('Expected a RuntimeError to be raised')
     def testOverlargeJob(self):
@@ -1094,7 +1126,7 @@ class InvalidAWSJobStoreTest(ToilTest):
 
 @needs_azure
 class AzureJobStoreTest(AbstractJobStoreTest.Test):
-    accountName = 'toiltest'
+    accountName = os.getenv('TOIL_AZURE_KEYNAME')
 
     def _createJobStore(self):
         from toil.jobStores.azureJobStore import AzureJobStore
@@ -1189,12 +1221,14 @@ class EncryptedFileJobStoreTest(FileJobStoreTest, AbstractEncryptedJobStoreTest.
 
 @needs_aws
 @needs_encryption
+@slow
 class EncryptedAWSJobStoreTest(AWSJobStoreTest, AbstractEncryptedJobStoreTest.Test):
     pass
 
 
 @needs_azure
 @needs_encryption
+@slow
 class EncryptedAzureJobStoreTest(AzureJobStoreTest, AbstractEncryptedJobStoreTest.Test):
     pass
 

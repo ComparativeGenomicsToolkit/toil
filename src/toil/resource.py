@@ -14,6 +14,9 @@
 
 from __future__ import absolute_import
 
+from future import standard_library
+standard_library.install_aliases()
+from builtins import map
 import errno
 import hashlib
 import importlib
@@ -27,7 +30,7 @@ from contextlib import closing
 from io import BytesIO
 from pydoc import locate
 from tempfile import mkdtemp
-from urllib2 import HTTPError
+from urllib.error import HTTPError
 from zipfile import ZipFile
 
 # Python 3 compatibility imports
@@ -122,7 +125,7 @@ class Resource(namedtuple('Resource', ('name', 'pathHash', 'url', 'contentHash')
         resourceRootDirPath = os.environ[cls.rootDirPathEnvName]
         os.environ.pop(cls.rootDirPathEnvName)
         shutil.rmtree(resourceRootDirPath)
-        for k, v in os.environ.items():
+        for k, v in list(os.environ.items()):
             if k.startswith(cls.resourceEnvNamePrefix):
                 os.environ.pop(k)
 
@@ -503,7 +506,15 @@ class ModuleDescriptor(namedtuple('ModuleDescriptor', ('dirPath', 'name', 'fromV
             log.warning('Cannot determine main program module.')
             return False
         else:
-            mainModuleFile = os.path.basename(mainModule.__file__)
+            # If __file__ is not a valid attribute, it's because
+            # toil is being run interactively, in which case
+            # we can reasonably assume that we are not running
+            # on a worker node.
+            try:
+                mainModuleFile = os.path.basename(mainModule.__file__)
+            except AttributeError:
+                return False
+
             workerModuleFiles = concat(('worker' + ext for ext in self.moduleExtensions),
                                        '_toil_worker')  # the setuptools entry point
             return mainModuleFile in workerModuleFiles

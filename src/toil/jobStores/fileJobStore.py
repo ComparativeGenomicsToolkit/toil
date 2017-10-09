@@ -14,15 +14,20 @@
 
 from __future__ import absolute_import
 
+from builtins import range
 from contextlib import contextmanager
 import logging
-import pickle as pickler
 import random
 import shutil
 import os
 import tempfile
 import stat
 import errno
+
+try:
+    import cPickle as pickle
+except ImportError:
+    import pickle
 
 # Python 3 compatibility imports
 from six.moves import xrange
@@ -60,6 +65,7 @@ class FileJobStore(AbstractJobStore):
         logger.debug("Path to job store directory is '%s'.", self.jobStoreDir)
         # Directory where temporary files go
         self.tempFilesDir = os.path.join(self.jobStoreDir, 'tmp')
+        self.linkImports = None
 
     def initialize(self, config):
         try:
@@ -70,6 +76,7 @@ class FileJobStore(AbstractJobStore):
             else:
                 raise
         os.mkdir(self.tempFilesDir)
+        self.linkImports = config.linkImports
         super(FileJobStore, self).initialize(config)
 
     def resume(self):
@@ -95,9 +102,19 @@ class FileJobStore(AbstractJobStore):
         # Make the job
         job = JobGraph.fromJobNode(jobNode, jobStoreID=self._getRelativePath(absJobDir),
                                    tryCount=self._defaultTryCount())
-        # Write job file to disk
-        self.update(job)
+        if hasattr(self, "_batchedJobGraphs") and self._batchedJobGraphs is not None:
+            self._batchedJobGraphs.append(job)
+        else:
+            self.update(job)
         return job
+
+    @contextmanager
+    def batch(self):
+        self._batchedJobGraphs = []
+        yield
+        for jobGraph in self._batchedJobGraphs:
+            self.update(jobGraph)
+        self._batchedJobGraphs = None
 
     def exists(self, jobStoreID):
         return os.path.exists(self._getJobFileName(jobStoreID))
@@ -122,7 +139,7 @@ class FileJobStore(AbstractJobStore):
         # Load a valid version of the job
         jobFile = self._getJobFileName(jobStoreID)
         with open(jobFile, 'r') as fileHandle:
-            job = pickler.load(fileHandle)
+            job = pickle.load(fileHandle)
         # The following cleans up any issues resulting from the failure of the
         # job during writing by the batch system.
         if os.path.isfile(jobFile + ".new"):
@@ -137,7 +154,7 @@ class FileJobStore(AbstractJobStore):
         # Atomicity guarantees use the fact the underlying file systems "move"
         # function is atomic.
         with open(self._getJobFileName(job.jobStoreID) + ".new", 'w') as f:
-            pickler.dump(job, f)
+            pickle.dump(job, f)
         # This should be atomic for the file system
         os.rename(self._getJobFileName(job.jobStoreID) + ".new", self._getJobFileName(job.jobStoreID))
 
@@ -162,24 +179,32 @@ class FileJobStore(AbstractJobStore):
     # Functions that deal with temporary files associated with jobs
     ##########################################
 
+    def _copyOrLink(self, srcURL, destPath):
+        # linking is not done be default because of issue #1755
+        srcPath = self._extractPathFromUrl(srcURL)
+        if self.linkImports:
+            try:
+                os.link(os.path.realpath(srcPath), destPath)
+            except OSError:
+                shutil.copyfile(srcPath, destPath)
+            else:
+                # make imported files read-only if they're linked for protection
+                os.chmod(destPath, 0o444)
+        else:
+            shutil.copyfile(srcPath, destPath)
+
     def _importFile(self, otherCls, url, sharedFileName=None):
         if issubclass(otherCls, FileJobStore):
             if sharedFileName is None:
                 fd, absPath = self._getTempFile()  # use this to get a valid path to write to in job store
                 os.close(fd)
                 os.unlink(absPath)
-                try:
-                    os.link(os.path.realpath(self._extractPathFromUrl(url)), absPath)
-                except OSError:
-                    shutil.copyfile(self._extractPathFromUrl(url), absPath)
+                self._copyOrLink(url, absPath)
                 return FileID(self._getRelativePath(absPath), os.stat(absPath).st_size)
             else:
                 self._requireValidSharedFileName(sharedFileName)
                 path = self._getSharedFilePath(sharedFileName)
-                try:
-                    os.link(os.path.realpath(self._extractPathFromUrl(url)), path)
-                except:
-                    shutil.copyfile(self._extractPathFromUrl(url), path)
+                self._copyOrLink(url, path)
                 return None
         else:
             return super(FileJobStore, self)._importFile(otherCls, url,
@@ -394,7 +419,7 @@ class FileJobStore(AbstractJobStore):
         :rtype : string, path to temporary directory in which to place files/directories.
         """
         tempDir = self.tempFilesDir
-        for i in xrange(self.levels):
+        for i in range(self.levels):
             tempDir = os.path.join(tempDir, random.choice(self.validDirs))
             if not os.path.exists(tempDir):
                 try:
