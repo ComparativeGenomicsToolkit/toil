@@ -199,7 +199,9 @@ iamFullPolicy = dict(Version="2012-10-17", Statement=[
 
 logDir = '--log_dir=/var/lib/mesos'
 leaderArgs = logDir + ' --registry=in_memory --cluster={name}'
-workerArgs = '{keyPath} --work_dir=/var/lib/mesos --master={ip}:5050 --attributes=preemptable:{preemptable} ' + logDir
+# --no-systemd_enable_support is necessary in Ubuntu 16.04 (otherwise,
+# Mesos attempts to contact systemd but can't find its run file)
+workerArgs = '{keyPath} --work_dir=/var/lib/mesos --master={ip}:5050 --attributes=preemptable:{preemptable} --no-systemd_enable_support ' + logDir
 
 awsUserData = """#cloud-config
 
