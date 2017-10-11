@@ -35,7 +35,7 @@ import urllib.parse
 import urllib.request, urllib.parse, urllib.error
 
 # Python 3 compatibility imports
-from six.moves import StringIO, reprlib
+from six.moves import xrange, StringIO, reprlib
 from six import iteritems
 
 from bd2k.util import strict_bool
@@ -46,7 +46,6 @@ import boto.sdb
 from boto.exception import S3CreateError
 from boto.exception import SDBResponseError, S3ResponseError
 
-from toil.fileStore import FileID
 from toil.jobStores.abstractJobStore import (AbstractJobStore,
                                              NoSuchJobException,
                                              ConcurrentFileModificationException,
@@ -232,15 +231,16 @@ class AWSJobStore(AbstractJobStore):
                         registry_domain.put_attributes(item_name=self.namePrefix,
                                                        attributes=attributes)
 
-    def _aws_job_from_item(self, item):
-        if "fileID" in item:
+    def _awsJobFromItem(self, item):
+        if "overlargeID" in item:
+            assert self.fileExists(item["overlargeID"])
             #This is an overlarge job, download the actual attributes
             #from the file store
             log.debug("Loading overlarge job from S3.")
-            with self.readFileStream(item["fileID"]) as fh:
+            with self.readFileStream(item["overlargeID"]) as fh:
                 binary = fh.read()
         else:
-            binary,_ = AWSJob.attributesToBinary(item)
+            binary,_ = SDBHelper.attributesToBinary(item)
             assert binary is not None
         job = pickle.loads(binary)
         return job
@@ -252,9 +252,9 @@ class AWSJobStore(AbstractJobStore):
             with self.writeFileStream() as (writable, fileID):
                 writable.write(binary)
             item = SDBHelper.binaryToAttributes('')
-            item["fileID"] = fileID
+            item["overlargeID"] = fileID
         else:
-            item = AWSJob.binaryToAttributes(binary)
+            item = SDBHelper.binaryToAttributes(binary)
         return item
 
     jobsPerBatchInsert = 25
@@ -277,7 +277,7 @@ class AWSJobStore(AbstractJobStore):
         jobStoreID = self._newJobID()
         log.debug("Creating job %s for '%s'",
                   jobStoreID, '<no command>' if jobNode.command is None else jobNode.command)
-        job = AWSJob.fromJobNode(jobNode, jobStoreID=jobStoreID, tryCount=self._defaultTryCount())
+        job = JobGraph.fromJobNode(jobNode, jobStoreID=jobStoreID, tryCount=self._defaultTryCount())
 
         if hasattr(self, "_batchedJobGraphs") and self._batchedJobGraphs is not None:
             self._batchedJobGraphs.append(job)
@@ -305,8 +305,7 @@ class AWSJobStore(AbstractJobStore):
                     query="select * from `%s`" % self.jobsDomain.name))
         assert result is not None
         for jobItem in result:
-            yield self._aws_job_from_item(jobItem)
-
+            yield self._awsJobFromItem(jobItem)
 
     def load(self, jobStoreID):
         item = None
@@ -315,7 +314,7 @@ class AWSJobStore(AbstractJobStore):
                 item = self.jobsDomain.get_attributes(bytes(jobStoreID), consistent_read=True)
         if not item:
             raise NoSuchJobException(jobStoreID)
-        job = self._aws_job_from_item(item)
+        job = self._awsJobFromItem(item)
         if job is None:
             raise NoSuchJobException(jobStoreID)
         log.debug("Loaded job %s", jobStoreID)
@@ -323,7 +322,7 @@ class AWSJobStore(AbstractJobStore):
 
     def update(self, job):
         log.debug("Updating job %s", job.jobStoreID)
-        item = self._aws_job_to_item(job)        
+        item = self._awsJobToItem(job)        
         for attempt in retry_sdb():
             with attempt:
                 assert self.jobsDomain.put_attributes(bytes(job.jobStoreID), item)
@@ -341,7 +340,7 @@ class AWSJobStore(AbstractJobStore):
                 item = self.jobsDomain.get_attributes(bytes(jobStoreID), consistent_read=True)
         if "overlargeID" in item:
             log.debug("Deleting job from filestore")
-            self.deleteFile(item["fileID"])
+            self.deleteFile(item["overlargeID"])
         for attempt in retry_sdb():
             with attempt:
                 self.jobsDomain.delete_attributes(item_name=bytes(jobStoreID))
@@ -383,7 +382,6 @@ class AWSJobStore(AbstractJobStore):
     def _importFile(self, otherCls, url, sharedFileName=None):
         if issubclass(otherCls, AWSJobStore):
             srcKey = self._getKeyForUrl(url, existing=True)
-            size = srcKey.size
             try:
                 if sharedFileName is None:
                     info = self.FileInfo.create(srcKey.name)
@@ -397,7 +395,7 @@ class AWSJobStore(AbstractJobStore):
                 info.save()
             finally:
                 srcKey.bucket.connection.close()
-            return FileID(info.fileID, size) if sharedFileName is None else None
+            return info.fileID if sharedFileName is None else None
         else:
             return super(AWSJobStore, self)._importFile(otherCls, url,
                                                         sharedFileName=sharedFileName)
@@ -1098,13 +1096,10 @@ class AWSJobStore(AbstractJobStore):
             if srcKey.size <= self._maxInlinedSize():
                 self.content = srcKey.get_contents_as_string()
             else:
-                self.version = copyKeyMultipart(srcBucketName=srcKey.bucket.name,
-                                                srcKeyName=srcKey.name,
-                                                srcKeyVersion=srcKey.version_id,
-                                                dstBucketName=self.outer.filesBucket.name,
-                                                dstKeyName=self._fileID,
-                                                sseAlgorithm='AES256',
-                                                sseKey=self._getSSEKey())
+                self.version = self._copyKey(srcKey=srcKey,
+                                             dstBucketName=self.outer.filesBucket.name,
+                                             dstKeyName=self._fileID,
+                                             headers=self._s3EncryptionHeaders()).version_id
 
         def copyTo(self, dstKey):
             """
@@ -1125,15 +1120,37 @@ class AWSJobStore(AbstractJobStore):
                         srcKey = self.outer.filesBucket.get_key(bytes(self.fileID))
                     srcKey.version_id = self.version
                     with attempt:
-                        copyKeyMultipart(srcBucketName=srcKey.bucket.name,
-                                         srcKeyName=srcKey.name,
-                                         srcKeyVersion=srcKey.version_id,
-                                         dstBucketName=dstKey.bucket.name,
-                                         dstKeyName=dstKey.name,
-                                         copySourceSseAlgorithm='AES256',
-                                         copySourceSseKey=self._getSSEKey())
+                        headers = {k.replace('amz-', 'amz-copy-source-', 1): v
+                                   for k, v in iteritems(self._s3EncryptionHeaders())}
+                        self._copyKey(srcKey=srcKey,
+                                      dstBucketName=dstKey.bucket.name,
+                                      dstKeyName=dstKey.name,
+                                      headers=headers)
             else:
                 assert False
+
+        def _copyKey(self, srcKey, dstBucketName, dstKeyName, headers=None):
+            headers = headers or {}
+            assert srcKey.size is not None 
+            if srcKey.size > self.outer.partSize:
+                return copyKeyMultipart(srcKey=srcKey,
+                                        dstBucketName=dstBucketName,
+                                        dstKeyName=dstKeyName,
+                                        partSize=self.outer.partSize,
+                                        headers=headers)
+            else:
+                # We need a location-agnostic connection to S3 so we can't use the one that we
+                # normally use for interacting with the job store bucket.
+                with closing(boto.connect_s3()) as s3:
+                    for attempt in retry_s3():
+                        with attempt:
+                            dstBucket = s3.get_bucket(dstBucketName)
+                            return dstBucket.copy_key(new_key_name=bytes(dstKeyName),
+                                                      src_bucket_name=srcKey.bucket.name,
+                                                      src_version_id=srcKey.version_id,
+                                                      src_key_name=bytes(srcKey.name),
+                                                      metadata=srcKey.metadata,
+                                                      headers=headers)
 
         def download(self, localFilePath):
             if self.content is not None:
@@ -1186,25 +1203,20 @@ class AWSJobStore(AbstractJobStore):
                             store.filesBucket.delete_key(key_name=bytes(self.fileID),
                                                          version_id=self.previousVersion)
 
-        def _getSSEKey(self):
-            sseKeyPath = self.outer.sseKeyPath
-            if sseKeyPath is None:
-                return None
-            else:
-                with open(sseKeyPath) as f:
-                    sseKey = f.read()
-                    return sseKey
-
         def _s3EncryptionHeaders(self):
+            sseKeyPath = self.outer.sseKeyPath
             if self.encrypted:
-                sseKey = self._getSSEKey()
-                assert sseKey is not None, 'Content is encrypted but no key was provided.'
-                assert len(sseKey) == 32
-                encodedSseKey = base64.b64encode(sseKey)
-                encodedSseKeyMd5 = base64.b64encode(hashlib.md5(sseKey).digest())
-                return {'x-amz-server-side-encryption-customer-algorithm': 'AES256',
-                        'x-amz-server-side-encryption-customer-key': encodedSseKey,
-                        'x-amz-server-side-encryption-customer-key-md5': encodedSseKeyMd5}
+                if sseKeyPath is None:
+                    raise AssertionError('Content is encrypted but no key was provided.')
+                else:
+                    with open(sseKeyPath) as f:
+                        sseKey = f.read()
+                    assert len(sseKey) == 32
+                    encodedSseKey = base64.b64encode(sseKey)
+                    encodedSseKeyMd5 = base64.b64encode(hashlib.md5(sseKey).digest())
+                    return {'x-amz-server-side-encryption-customer-algorithm': 'AES256',
+                            'x-amz-server-side-encryption-customer-key': encodedSseKey,
+                            'x-amz-server-side-encryption-customer-key-md5': encodedSseKeyMd5}
             else:
                 return {}
 
@@ -1297,35 +1309,6 @@ class AWSJobStore(AbstractJobStore):
 aRepr = reprlib.Repr()
 aRepr.maxstring = 38  # so UUIDs don't get truncated (36 for UUID plus 2 for quotes)
 custom_repr = aRepr.repr
-
-
-class AWSJob(JobGraph, SDBHelper):
-    """
-    A Job that can be converted to and from an SDB item.
-    """
-
-    @classmethod
-    def fromItem(cls, item):
-        """
-        :type item: Item
-        :rtype: AWSJob
-        """
-        binary, _ = cls.attributesToBinary(item)
-        assert binary is not None
-        return cPickle.loads(binary)
-
-    def toItem(self):
-        """
-        To to a peculiarity of Boto's SDB bindings, this method does not return an Item,
-        but a tuple. The returned tuple can be used with put_attributes like so
-
-        domain.put_attributes( *toItem(...) )
-
-        :rtype: (str,dict)
-        :return: a str for the item's name and a dictionary for the item's attributes
-        """
-        return self.jobStoreID, self.binaryToAttributes(cPickle.dumps(self, protocol=cPickle.HIGHEST_PROTOCOL))
-
 
 class BucketLocationConflictException(Exception):
     def __init__(self, bucketRegion):
