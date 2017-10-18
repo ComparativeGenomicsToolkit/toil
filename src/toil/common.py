@@ -27,6 +27,7 @@ import tempfile
 import time
 import uuid
 import subprocess
+import requests
 from argparse import ArgumentParser
 
 try:
@@ -48,6 +49,7 @@ from toil.batchSystems.options import addOptions as addBatchOptions
 from toil.batchSystems.options import setDefaultOptions as setDefaultBatchOptions
 from toil.batchSystems.options import setOptions as setBatchOptions
 
+from toil import lookupEnvVar
 from toil.version import dockerRegistry, dockerTag
 
 logger = logging.getLogger(__name__)
@@ -91,7 +93,7 @@ class Config(object):
         self.nodeTypes = []
         self.nodeOptions = None
         self.minNodes = None
-        self.maxNodes = []
+        self.maxNodes = [10]
         self.alphaPacking = 0.8
         self.betaInertia = 1.2
         self.scaleInterval = 30
@@ -381,12 +383,13 @@ def _addOptions(addGroupFn, config):
     addOptionFn('--minNodes', default=None, 
                  help="Mininum number of nodes of each type in the cluster, if using "
                               "auto-scaling. This should be provided as a comma-separated "
-                              "list of the same length as the list of node types.")
+                              "list of the same length as the list of node types. default=0")
 
     addOptionFn('--maxNodes', default=None,
                 help="Maximum number of nodes of each type in the cluster, if using "
-                "autoscaling. This should be provided as a comma-separated list of the same "
-                "length as the list of node types.")
+                "autoscaling, provided as a comma-separated list. The first value is used "
+                "as a default if the list length is less than the number of nodeTypes. "
+                "default=%s" % config.maxNodes[0])
 
     # TODO: DESCRIBE THE FOLLOWING TWO PARAMETERS
     addOptionFn("--alphaPacking", dest="alphaPacking", default=None,
@@ -1052,25 +1055,35 @@ class ToilMetrics:
         else:
             self.clusterName = "none"
 
-        self.mtailImage = "%s/toil-mtail:%s" % (dockerRegistry, dockerTag)
-        self.grafanaImage = "%s/toil-grafana:%s" % (dockerRegistry, dockerTag)
-        self.prometheusImage = "%s/toil-prometheus:%s" % (dockerRegistry, dockerTag)
+        registry = lookupEnvVar(name='docker registry',
+                                envName='TOIL_DOCKER_REGISTRY',
+                                defaultValue=dockerRegistry)
+
+        self.mtailImage = "%s/toil-mtail:%s" % (registry, dockerTag)
+        self.grafanaImage = "%s/toil-grafana:%s" % (registry, dockerTag)
+        self.prometheusImage = "%s/toil-prometheus:%s" % (registry, dockerTag)
 
         self.startDashboard(clusterName = self.clusterName)
 
         # Always restart the mtail container, because metrics should start from scratch
         # for each workflow
         try:
-            subprocess.Popen(["docker", "pull", self.mtailImage])
+            subprocess.check_call(["docker", "rm", "-f", "toil_mtail"])
+        except subprocess.CalledProcessError:
+            pass
+
+        try:
             self.mtailProc = subprocess.Popen(["docker", "run", "--rm", "--interactive",
                                                "--net=host",
+                                               "--name", "toil_mtail",
                                                "-p", "3903:3903",
                                                self.mtailImage],
                                               stdin=subprocess.PIPE, stdout=subprocess.PIPE)
-
         except subprocess.CalledProcessError:
             logger.warn("Could not start toil metrics server.")
             self.mtailProc = None
+        except KeyboardInterrupt:
+            self.mtailProc.terminate()
 
         # On single machine, launch a node exporter instance to monitor CPU/RAM usage.
         # On AWS this is handled by the EC2 init script
@@ -1091,12 +1104,14 @@ class ToilMetrics:
             except subprocess.CalledProcessError:
                 logger.warn("Couldn't start node exporter, won't get RAM and CPU usage for dashboard.")
                 self.nodeExporterProc = None
+            except KeyboardInterrupt:
+                self.nodeExporterProc.terminate()
 
     @staticmethod
     def _containerRunning(containerName):
         try:
-            result = bool(subprocess.check_output(["docker", "inspect", "-f",
-                                                          "'{{.State.Running}}'", containerName]))
+            result = subprocess.check_output(["docker", "inspect", "-f",
+                                                          "'{{.State.Running}}'", containerName]) == "true"
         except subprocess.CalledProcessError:
             result = False
         return result
@@ -1104,8 +1119,11 @@ class ToilMetrics:
     def startDashboard(self, clusterName):
         try:
             if not self._containerRunning("toil_prometheus"):
-                subprocess.call(["docker", "pull", self.prometheusImage])
-                subprocess.call(["docker", "run",
+                try:
+                    subprocess.check_call(["docker", "rm", "-f", "toil_prometheus"])
+                except subprocess.CalledProcessError:
+                    pass
+                subprocess.check_call(["docker", "run",
                                  "--name", "toil_prometheus",
                                  "--net=host",
                                  "-d",
@@ -1114,30 +1132,32 @@ class ToilMetrics:
                                  clusterName])
 
             if not self._containerRunning("toil_grafana"):
-                subprocess.call(["docker", "pull", self.grafanaImage])
-                subprocess.call(["docker", "run",
+                try:
+                    subprocess.check_call(["docker", "rm", "-f", "toil_grafana"])
+                except subprocess.CalledProcessError:
+                    pass
+                subprocess.check_call(["docker", "run",
                                  "--name", "toil_grafana",
                                  "-d", "-p=3000:3000",
                                  self.grafanaImage])
-
-
-            def requestPredicate(e):
-                if isinstance(e, subprocess.CalledProcessError):
-                    return True
-                return False
-            #Add prometheus data source
-            for attempt in retry(delays=(0, 1, 1, 4, 16), predicate=requestPredicate):
-                with attempt:
-                    subprocess.check_call(['curl', '-i', '--user', 'admin:admin', '-H',
-                                     'Content-Type: application/json',
-                                     '-X', 'POST',
-                                     '-d', '{"name":"DS_PROMETHEUS",\
-                                     "type":"prometheus",\
-                                     "url":"http://localhost:9090",\
-                                     "access":"direct"}',
-                                     'http://localhost:3000/api/datasources'])
         except subprocess.CalledProcessError:
             logger.warn("Could not start prometheus/grafana dashboard.")
+            return
+
+        #Add prometheus data source
+        def requestPredicate(e):
+            if isinstance(e, requests.exceptions.ConnectionError):
+                return True
+            return False
+        try:
+            for attempt in retry(delays=(0, 1, 1, 4, 16), predicate=requestPredicate):
+                with attempt:
+                    requests.post('http://localhost:3000/api/datasources', auth=('admin','admin'),
+                                  data='{"name":"DS_PROMETHEUS","type":"prometheus", \
+                                  "url":"http://localhost:9090", "access":"direct"}',
+                                  headers = {'content-type': 'application/json', "access": "direct"})
+        except requests.exceptions.ConnectionError:
+            logger.info("Could not add data source to Grafana dashboard - no metrics will be displayed.")
 
     def log(self, message):
         if self.mtailProc:
