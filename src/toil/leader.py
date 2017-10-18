@@ -458,6 +458,8 @@ class Leader(object):
                     else:
                         logger.warn('Job failed with exit value %i: %s',
                                     result, updatedJob)
+                        if self.toilMetrics:
+                            self.toilMetrics.logFailedJob(updatedJob)
                     self.processFinishedJob(jobID, result, wallTime=wallTime)
 
             else:
@@ -813,8 +815,6 @@ class Leader(object):
         """
         # Mark job as a totally failed job
         self.toilState.totalFailedJobs.add(JobNode.fromJobGraph(jobGraph))
-        if self.toilMetrics:
-            self.toilMetrics.logFailedJob(jobGraph)
 
         if jobGraph.jobStoreID in self.toilState.serviceJobStoreIDToPredecessorJob: # Is
             # a service job
