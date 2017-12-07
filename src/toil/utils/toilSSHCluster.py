@@ -32,4 +32,4 @@ def main():
     config = parseBasicOptions(parser)
     cluster = Cluster(provisioner=config.provisioner,
                       clusterName=config.clusterName, zone=config.zone)
-    cluster.sshCluster(args=config.args, strict=not config.insecure)
+    cluster.sshCluster(args=config.args, strict=not config.insecure, tty=True)
