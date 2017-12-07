@@ -121,11 +121,10 @@ class AWSProvisioner(AbstractProvisioner):
         # the security group name is used as the cluster identifier
         sgs = self._createSecurityGroup(ctx, clusterName, vpcSubnet)
         bdm = self._getBlockDeviceMapping(leaderInstanceType, rootVolSize=leaderStorage)
-        self.masterPublicKey = 'AAAAB3NzaC1yc2Enoauthorizedkeyneeded'
         leaderData = dict(role='leader',
                           image=applianceSelf(),
                           entrypoint='mesos-master',
-                          sshKey=self.masterPublicKey,
+                          sshKeyStanza="",
                           args=leaderArgs.format(name=clusterName))
         userData = awsUserData.format(**leaderData)
         kwargs = {'key_name': keyName, 'security_group_ids': [sg.id for sg in sgs],
@@ -242,7 +241,6 @@ class AWSProvisioner(AbstractProvisioner):
     def sshLeader(cls, clusterName, args=None, zone=None, **kwargs):
         leader = cls._getLeader(clusterName, zone=zone)
         logger.info('SSH ready')
-        kwargs['tty'] = sys.stdin.isatty()
         command = args if args else ['bash']
         cls._sshAppliance(leader.public_dns_name, *command, **kwargs)
 
@@ -266,7 +264,8 @@ class AWSProvisioner(AbstractProvisioner):
         workerData = dict(role='worker',
                           image=applianceSelf(),
                           entrypoint=entryPoint,
-                          sshKey=self.masterPublicKey,
+                          sshKeyStanza="""ssh_authorized_keys:
+    - "ssh-rsa {sshKey}""".format(sshKey=self.masterPublicKey),
                           args=workerArgs.format(ip=self.leaderIP, preemptable=preemptable, keyPath=keyPath))
         userData = awsUserData.format(**workerData)
         sgs = [sg for sg in self.ctx.ec2.get_all_security_groups() if sg.name == self.clusterName]
