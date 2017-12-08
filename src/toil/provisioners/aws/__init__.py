@@ -321,6 +321,5 @@ coreos:
             -collector.sysfs /host/sys \
             -collector.filesystem.ignored-mount-points ^/(sys|proc|dev|host|etc)($|/)
 
-ssh_authorized_keys:
-    - "ssh-rsa {sshKey}"
+{sshKeyStanza}
 """
