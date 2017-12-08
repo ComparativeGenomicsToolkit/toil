@@ -265,7 +265,8 @@ class AWSProvisioner(AbstractProvisioner):
                           image=applianceSelf(),
                           entrypoint=entryPoint,
                           sshKeyStanza="""ssh_authorized_keys:
-    - "ssh-rsa {sshKey}""".format(sshKey=self.masterPublicKey),
+    - "ssh-rsa {sshKey}"
+""".format(sshKey=self.masterPublicKey),
                           args=workerArgs.format(ip=self.leaderIP, preemptable=preemptable, keyPath=keyPath))
         userData = awsUserData.format(**workerData)
         sgs = [sg for sg in self.ctx.ec2.get_all_security_groups() if sg.name == self.clusterName]
