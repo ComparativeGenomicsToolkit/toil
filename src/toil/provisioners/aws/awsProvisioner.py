@@ -21,7 +21,7 @@ import logging
 
 import time
 
-import sys
+import requests
 import string
 
 # Python 3 compatibility imports
@@ -140,14 +140,14 @@ class AWSProvisioner(AbstractProvisioner):
             kwargs["subnet_id"] = vpcSubnet
         if not leaderSpotBid:
             logger.info('Launching non-preemptable leader')
-            create_ondemand_instances(ctx.ec2, image_id=self._discoverAMI(ctx),
+            create_ondemand_instances(ctx.ec2, image_id=self._discoverAMI(zone),
                                       spec=kwargs, num_instances=1)
         else:
             logger.info('Launching preemptable leader')
             # force generator to evaluate
             list(create_spot_instances(ec2=ctx.ec2,
                                        price=leaderSpotBid,
-                                       image_id=self._discoverAMI(ctx),
+                                       image_id=self._discoverAMI(zone),
                                        tags={'clusterName': clusterName},
                                        spec=kwargs,
                                        num_instances=1))
@@ -274,13 +274,14 @@ class AWSProvisioner(AbstractProvisioner):
                           args=workerArgs.format(ip=self.leaderIP, preemptable=preemptable, keyPath=keyPath))
         userData = awsUserData.format(**workerData)
         sgs = [sg for sg in self.ctx.ec2.get_all_security_groups() if sg.name == self.clusterName]
+        zone = getCurrentAWSZone()
         kwargs = {'key_name': self.keyName,
                   'security_group_ids': [sg.id for sg in sgs],
                   'instance_type': instanceType.name,
                   'user_data': userData,
                   'block_device_map': bdm,
                   'instance_profile_arn': arn,
-                  'placement': getCurrentAWSZone()}
+                  'placement': zone}
         kwargs["subnet_id"] = self.subnetID if self.subnetID else self._getClusterInstance(self.instanceMetaData).subnet_id
 
         instancesLaunched = []
@@ -292,7 +293,7 @@ class AWSProvisioner(AbstractProvisioner):
                 # every request in this method
                 if not preemptable:
                     logger.info('Launching %s non-preemptable nodes', numNodes)
-                    instancesLaunched = create_ondemand_instances(self.ctx.ec2, image_id=self._discoverAMI(self.ctx),
+                    instancesLaunched = create_ondemand_instances(self.ctx.ec2, image_id=self._discoverAMI(zone),
                                                                   spec=kwargs, num_instances=numNodes)
                 else:
                     logger.info('Launching %s preemptable nodes', numNodes)
@@ -300,7 +301,7 @@ class AWSProvisioner(AbstractProvisioner):
                     # force generator to evaluate
                     instancesLaunched = list(create_spot_instances(ec2=self.ctx.ec2,
                                                                    price=self.spotBids[nodeType],
-                                                                   image_id=self._discoverAMI(self.ctx),
+                                                                   image_id=self._discoverAMI(zone),
                                                                    tags={'clusterName': self.clusterName},
                                                                    spec=kwargs,
                                                                    num_instances=numNodes,
@@ -386,23 +387,18 @@ class AWSProvisioner(AbstractProvisioner):
 
     @classmethod
     @memoize
-    def _discoverAMI(cls, ctx):
-        def descriptionMatches(ami):
-            return ami.description is not None and '1409.0.0' in ami.description
+    def _discoverAMI(cls, zone):
         coreOSAMI = os.environ.get('TOIL_AWS_AMI')
-        if coreOSAMI is not None:
-            return coreOSAMI
-        # that ownerID corresponds to coreOS
-
-        for attempt in retry(predicate= lambda e : isinstance(e, SSLError)):
-            # SSLError is thrown when get_all_images times out
-            with attempt:
-                amis = ctx.ec2.get_all_images(owners=['679593333241'])
-
-        coreOSAMI = [ami for ami in amis if descriptionMatches(ami)]
-        logger.debug('Found the following matching AMIs: %s', coreOSAMI)
-        assert len(coreOSAMI) == 1
-        return coreOSAMI.pop().id
+        if coreOSAMI is None:
+            url = "https://stable.release.core-os.net/amd64-usr/current/coreos_production_ami_all.json"
+            amis = requests.get(url).json()
+            # Crude, but: remove availability zone designation
+            region = zone[:-1]
+            infos = [info for info in amis['amis'] if info['name'] == region]
+            assert len(infos) == 1, "Didn't find 1 AMI for region " + region
+            # Hardcoding the HVM AMI, because that was (apparently)
+            # the previous behavior
+            return infos[0]['hvm']
 
     @classmethod
     def dockerInfo(cls):
