@@ -399,6 +399,7 @@ class AWSProvisioner(AbstractProvisioner):
             # Hardcoding the HVM AMI, because that was (apparently)
             # the previous behavior
             return infos[0]['hvm']
+        return coreOSAMI
 
     @classmethod
     def dockerInfo(cls):
