@@ -499,8 +499,9 @@ class Leader(object):
                 logger.info("No jobs left to run so exiting.")
                 break
 
-            # Check for deadlocks
-            self.checkForDeadlocks()
+            if len(updatedJobs) == 0 and len(self.toilState.updatedJobs) == 0:
+                # Nothing happened this round. Check for deadlocks.
+                self.checkForDeadlocks()
 
         logger.info("Finished the main loop")
 
@@ -520,7 +521,7 @@ class Leader(object):
         totalRunningJobs = len(self.batchSystem.getRunningBatchJobIDs())
         totalServicesIssued = self.serviceJobsIssued + self.preemptableServiceJobsIssued
         # If there are no updated jobs and at least some jobs running
-        if totalServicesIssued >= totalRunningJobs and len(self.toilState.updatedJobs) == 0 and totalRunningJobs > 0:
+        if totalServicesIssued >= totalRunningJobs and totalRunningJobs > 0:
             serviceJobs = [x for x in list(self.jobBatchSystemIDToIssuedJob.values()) if isinstance(x, ServiceJobNode)]
             runningServiceJobs = set([x for x in serviceJobs if self.serviceManager.isRunning(x)])
             assert len(runningServiceJobs) <= totalRunningJobs
