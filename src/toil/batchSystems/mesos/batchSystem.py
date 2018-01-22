@@ -384,87 +384,95 @@ class MesosBatchSystem(BatchSystemSupport,
         """
         Invoked when resources have been offered to this framework.
         """
-        self._trackOfferedNodes(offers)
+        try:
+            self._trackOfferedNodes(offers)
 
-        jobTypes = self.jobQueues.sorted()
+            jobTypes = self.jobQueues.sorted()
 
-        # TODO: We may want to assert that numIssued >= numRunning
-        if not jobTypes or len(self.getIssuedBatchJobIDs()) == len(self.getRunningBatchJobIDs()):
-            log.debug('There are no queued tasks. Declining Mesos offers.')
-            # Without jobs, we can get stuck with no jobs and no new offers until we decline it.
-            self._declineAllOffers(driver, offers)
-            return
+            # TODO: We may want to assert that numIssued >= numRunning
+            if not jobTypes or len(self.getIssuedBatchJobIDs()) == len(self.getRunningBatchJobIDs()):
+                log.debug('There are no queued tasks. Declining Mesos offers.')
+                # Without jobs, we can get stuck with no jobs and no new offers until we decline it.
+                self._declineAllOffers(driver, offers)
+                return
 
-        unableToRun = True
-        # Right now, gives priority to largest jobs
-        for offer in offers:
-            if offer.hostname in self.ignoredNodes:
-                log.debug("Declining offer %s because node %s is designated for termination" %
-                        (offer.id.value, offer.hostname))
-                driver.declineOffer(offer.id)
-                continue
-            runnableTasks = []
-            # TODO: In an offer, can there ever be more than one resource with the same name?
-            offerCores, offerMemory, offerDisk, offerPreemptable = self._parseOffer(offer)
-            log.debug('Got offer %s for a %spreemptable slave with %.2f MiB memory, %.2f core(s) '
-                      'and %.2f MiB of disk.', offer.id.value, '' if offerPreemptable else 'non-',
-                      offerMemory, offerCores, offerDisk)
-            remainingCores = offerCores
-            remainingMemory = offerMemory
-            remainingDisk = offerDisk
+            unableToRun = True
+            # Right now, gives priority to largest jobs
+            for offer in offers:
+                if offer.hostname in self.ignoredNodes:
+                    log.debug("Declining offer %s because node %s is designated for termination" %
+                            (offer.id.value, offer.hostname))
+                    driver.declineOffer(offer.id)
+                    continue
+                runnableTasks = []
+                # TODO: In an offer, can there ever be more than one resource with the same name?
+                offerCores, offerMemory, offerDisk, offerPreemptable = self._parseOffer(offer)
+                log.debug('Got offer %s for a %spreemptable slave with %.2f MiB memory, %.2f core(s) '
+                          'and %.2f MiB of disk.', offer.id.value, '' if offerPreemptable else 'non-',
+                          offerMemory, offerCores, offerDisk)
+                remainingCores = offerCores
+                remainingMemory = offerMemory
+                remainingDisk = offerDisk
 
-            for jobType in jobTypes:
-                runnableTasksOfType = []
-                # Because we are not removing from the list until outside of the while loop, we
-                # must decrement the number of jobs left to run ourselves to avoid an infinite
-                # loop.
-                nextToLaunchIndex = 0
-                # Toil specifies disk and memory in bytes but Mesos uses MiB
-                while ( not self.jobQueues.typeEmpty(jobType)
-                       # On a non-preemptable node we can run any job, on a preemptable node we
-                       # can only run preemptable jobs:
-                       and (not offerPreemptable or jobType.preemptable)
-                       and remainingCores >= jobType.cores
-                       and remainingDisk >= toMiB(jobType.disk)
-                       and remainingMemory >= toMiB(jobType.memory)):
-                    task = self._prepareToRun(jobType, offer)
-                    # TODO: this used to be a conditional but Hannes wanted it changed to an assert
-                    # TODO: ... so we can understand why it exists.
-                    assert int(task.task_id.value) not in self.runningJobMap
-                    runnableTasksOfType.append(task)
-                    log.debug("Preparing to launch Mesos task %s using offer %s ...",
-                              task.task_id.value, offer.id.value)
-                    remainingCores -= jobType.cores
-                    remainingMemory -= toMiB(jobType.memory)
-                    remainingDisk -= toMiB(jobType.disk)
-                    nextToLaunchIndex += 1
+                for jobType in jobTypes:
+                    runnableTasksOfType = []
+                    # Because we are not removing from the list until outside of the while loop, we
+                    # must decrement the number of jobs left to run ourselves to avoid an infinite
+                    # loop.
+                    nextToLaunchIndex = 0
+                    # Toil specifies disk and memory in bytes but Mesos uses MiB
+                    while ( not self.jobQueues.typeEmpty(jobType)
+                           # On a non-preemptable node we can run any job, on a preemptable node we
+                           # can only run preemptable jobs:
+                           and (not offerPreemptable or jobType.preemptable)
+                           and remainingCores >= jobType.cores
+                           and remainingDisk >= toMiB(jobType.disk)
+                           and remainingMemory >= toMiB(jobType.memory)):
+                        task = self._prepareToRun(jobType, offer)
+                        # TODO: this used to be a conditional but Hannes wanted it changed to an assert
+                        # TODO: ... so we can understand why it exists.
+                        assert int(task.task_id.value) not in self.runningJobMap
+                        runnableTasksOfType.append(task)
+                        log.debug("Preparing to launch Mesos task %s using offer %s ...",
+                                  task.task_id.value, offer.id.value)
+                        remainingCores -= jobType.cores
+                        remainingMemory -= toMiB(jobType.memory)
+                        remainingDisk -= toMiB(jobType.disk)
+                        nextToLaunchIndex += 1
+                    else:
+                        log.debug('Offer %(offer)s not suitable to run the tasks with requirements '
+                                  '%(requirements)r. Mesos offered %(memory)s memory, %(cores)s cores '
+                                  'and %(disk)s of disk on a %(non)spreemptable slave.',
+                                  dict(offer=offer.id.value,
+                                       requirements=jobType.__dict__,
+                                       non='' if offerPreemptable else 'non-',
+                                       memory=fromMiB(offerMemory),
+                                       cores=offerCores,
+                                       disk=fromMiB(offerDisk)))
+                    runnableTasks.extend(runnableTasksOfType)
+                # Launch all runnable tasks together so we only call launchTasks once per offer
+                if runnableTasks:
+                    unableToRun = False
+                    driver.launchTasks(offer.id, runnableTasks)
+                    self._updateStateToRunning(offer, runnableTasks)
                 else:
-                    log.debug('Offer %(offer)s not suitable to run the tasks with requirements '
-                              '%(requirements)r. Mesos offered %(memory)s memory, %(cores)s cores '
-                              'and %(disk)s of disk on a %(non)spreemptable slave.',
-                              dict(offer=offer.id.value,
-                                   requirements=jobType.__dict__,
-                                   non='' if offerPreemptable else 'non-',
-                                   memory=fromMiB(offerMemory),
-                                   cores=offerCores,
-                                   disk=fromMiB(offerDisk)))
-                runnableTasks.extend(runnableTasksOfType)
-            # Launch all runnable tasks together so we only call launchTasks once per offer
-            if runnableTasks:
-                unableToRun = False
-                driver.launchTasks(offer.id, runnableTasks)
-                self._updateStateToRunning(offer, runnableTasks)
-            else:
-                log.debug('Although there are queued jobs, none of them could be run with offer %s '
-                          'extended to the framework.', offer.id)
-                driver.declineOffer(offer.id)
+                    log.debug('Although there are queued jobs, none of them could be run with offer %s '
+                              'extended to the framework.', offer.id)
+                    driver.declineOffer(offer.id)
 
-        if unableToRun and time.time() > (self.lastTimeOfferLogged + self.logPeriod):
-            self.lastTimeOfferLogged = time.time()
-            log.debug('Although there are queued jobs, none of them were able to run in '
-                     'any of the offers extended to the framework. There are currently '
-                     '%i jobs running. Enable debug level logging to see more details about '
-                     'job types and offers received.', len(self.runningJobMap))
+            if unableToRun and time.time() > (self.lastTimeOfferLogged + self.logPeriod):
+                self.lastTimeOfferLogged = time.time()
+                log.debug('Although there are queued jobs, none of them were able to run in '
+                         'any of the offers extended to the framework. There are currently '
+                         '%i jobs running. Enable debug level logging to see more details about '
+                         'job types and offers received.', len(self.runningJobMap))
+        except Exception:
+            # We hit an exception. We swallow the exception here to
+            # avoid crashing the driver thread and stalling the
+            # pipeline -- though if the error is persistent, the
+            # pipeline will be stalled anyway.
+            log.exception("Mesos driver thread encountered an exception. Automatically "
+                          "declining all offers.")
 
     def _trackOfferedNodes(self, offers):
         for offer in offers:
