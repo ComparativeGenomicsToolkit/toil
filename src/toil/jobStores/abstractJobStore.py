@@ -20,10 +20,12 @@ from builtins import map
 from builtins import object
 import shutil
 
+import multiprocessing
 import re
 from abc import ABCMeta, abstractmethod
 from contextlib import contextmanager, closing
 from datetime import timedelta
+from itertools import izip, repeat
 from uuid import uuid4
 
 # Python 3 compatibility imports
@@ -48,6 +50,17 @@ import logging
 
 logger = logging.getLogger(__name__)
 
+# Top-level because of multiprocessing's pickling restrictions.
+def deleteJob(args):
+    jobStore, jobGraph = args
+    # clean up any associated files before deletion
+    for fileID in jobGraph.filesToDelete:
+        # Delete any files that should already be deleted
+        logger.warn("Deleting file '%s'. It is marked for deletion but has not yet been "
+                    "removed.", fileID)
+        self.deleteFile(fileID)
+    # Delete the job
+    jobStore.delete(jobGraph.jobStoreID)
 
 class InvalidImportExportUrlException(Exception):
     def __init__(self, url):
@@ -453,6 +466,16 @@ class AbstractJobStore(with_metaclass(ABCMeta, object)):
         if jobCache is None:
             logger.warning("Cleaning jobStore recursively. This may be slow.")
 
+        if jobCache is not None:
+            # Try to pre-emptively update any checkpoints if we have a
+            # cache. This lets us use the fast-path deletion method
+            # below, rather than having to traverse the jobStore
+            # recursively, which can be really slow.
+            for checkpointJG in [jG for jG in jobCache.values() if jG.checkpoint is not None]:
+                checkpointJG.stack = [[], []]
+                checkpointJG.services = []
+                self.update(checkpointJG)
+
         # Functions to get and check the existence of jobs, using the jobCache
         # if present
         def getJob(jobId):
@@ -506,15 +529,8 @@ class AbstractJobStore(with_metaclass(ABCMeta, object)):
 
         # Cleanup jobs that are not reachable from the root, and therefore orphaned
         jobsToDelete = [x for x in getJobs() if x.jobStoreID not in reachableFromRoot]
-        for jobGraph in jobsToDelete:
-            # clean up any associated files before deletion
-            for fileID in jobGraph.filesToDelete:
-                # Delete any files that should already be deleted
-                logger.warn("Deleting file '%s'. It is marked for deletion but has not yet been "
-                            "removed.", fileID)
-                self.deleteFile(fileID)
-            # Delete the job
-            self.delete(jobGraph.jobStoreID)
+        pool = multiprocessing.Pool()
+        pool.map(deleteJob, izip(repeat(self), jobsToDelete))
 
         jobGraphsReachableFromRoot = {id: getJob(id) for id in reachableFromRoot}
 
