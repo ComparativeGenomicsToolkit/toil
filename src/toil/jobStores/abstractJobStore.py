@@ -20,12 +20,10 @@ from builtins import map
 from builtins import object
 import shutil
 
-import multiprocessing
 import re
 from abc import ABCMeta, abstractmethod
 from contextlib import contextmanager, closing
 from datetime import timedelta
-from itertools import izip, repeat
 from uuid import uuid4
 
 # Python 3 compatibility imports
@@ -46,21 +44,11 @@ try:
 except ImportError:
     import pickle
 
+from pathos.multiprocessing import ProcessingPool
+
 import logging
 
 logger = logging.getLogger(__name__)
-
-# Top-level because of multiprocessing's pickling restrictions.
-def deleteJob(args):
-    jobStore, jobGraph = args
-    # clean up any associated files before deletion
-    for fileID in jobGraph.filesToDelete:
-        # Delete any files that should already be deleted
-        logger.warn("Deleting file '%s'. It is marked for deletion but has not yet been "
-                    "removed.", fileID)
-        self.deleteFile(fileID)
-    # Delete the job
-    jobStore.delete(jobGraph.jobStoreID)
 
 class InvalidImportExportUrlException(Exception):
     def __init__(self, url):
@@ -522,9 +510,19 @@ class AbstractJobStore(with_metaclass(ABCMeta, object)):
         logger.info("%d jobs reachable from root." % len(reachableFromRoot))
 
         # Cleanup jobs that are not reachable from the root, and therefore orphaned
+        def deleteJob(jobGraph):
+            # clean up any associated files before deletion
+            for fileID in jobGraph.filesToDelete:
+                # Delete any files that should already be deleted
+                logger.warn("Deleting file '%s'. It is marked for deletion but has not yet been "
+                            "removed.", fileID)
+                self.deleteFile(fileID)
+            # Delete the job
+            self.delete(jobGraph.jobStoreID)
+
         jobsToDelete = [x for x in getJobs() if x.jobStoreID not in reachableFromRoot]
-        pool = multiprocessing.Pool()
-        pool.map(deleteJob, izip(repeat(self), jobsToDelete))
+        pool = ProcessingPool()
+        pool.map(deleteJob, jobsToDelete)
 
         jobGraphsReachableFromRoot = {id: getJob(id) for id in reachableFromRoot}
 
