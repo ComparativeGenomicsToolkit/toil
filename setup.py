@@ -74,6 +74,7 @@ def runSetup():
             'six>=1.10.0',
             'future',
             'requests==2.18.4',
+            'pathos==0.2.1',
             'docker==2.5.1'],
         extras_require={
             'mesos': mesos_reqs,
