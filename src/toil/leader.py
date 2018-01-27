@@ -717,12 +717,6 @@ class Leader(object):
         return len( self.reissueMissingJobs_missingHash ) == 0 #We use this to inform
         #if there are missing jobs
 
-    def processRemovedJob(self, issuedJob, resultStatus):
-        if resultStatus != 0:
-            logger.warn("Despite the batch system claiming failure the "
-                        "job %s seems to have finished and been removed", issuedJob)
-        self._updatePredecessorStatus(issuedJob.jobStoreID)
-
     def processFinishedJob(self, batchSystemID, resultStatus, wallTime=None):
         """
         Function reads a processed jobGraph file and updates its state.
@@ -731,23 +725,9 @@ class Leader(object):
         jobStoreID = jobNode.jobStoreID
         if wallTime is not None and self.clusterScaler is not None:
             self.clusterScaler.addCompletedJob(jobNode, wallTime)
-        if self.jobStore.exists(jobStoreID):
+        try:
+            jobGraph = self.jobStore.load(jobStoreID)
             logger.debug("Job %s continues to exist (i.e. has more to do)", jobNode)
-            try:
-                jobGraph = self.jobStore.load(jobStoreID)
-            except NoSuchJobException:
-                # Avoid importing AWSJobStore as the corresponding extra might be missing
-                if self.jobStore.__class__.__name__ == 'AWSJobStore':
-                    # We have a ghost job - the job has been deleted but a stale read from
-                    # SDB gave us a false positive when we checked for its existence.
-                    # Process the job from here as any other job removed from the job store.
-                    # This is a temporary work around until https://github.com/BD2KGenomics/toil/issues/1091
-                    # is completed
-                    logger.warn('Got a stale read from SDB for job %s', jobNode)
-                    self.processRemovedJob(jobNode, resultStatus)
-                    return
-                else:
-                    raise
             if jobGraph.logJobStoreFileID is not None:
                 with jobGraph.getLogFileHandle( self.jobStore ) as logFileStream:
                     # more memory efficient than read().striplines() while leaving off the
@@ -773,8 +753,12 @@ class Leader(object):
             self.toilState.updatedJobs.add((jobGraph, resultStatus)) #Now we know the
             #jobGraph is done we can add it to the list of updated jobGraph files
             logger.debug("Added job: %s to active jobs", jobGraph)
-        else:  #The jobGraph is done
-            self.processRemovedJob(jobNode, resultStatus)
+        except NoSuchJobException:
+            # The jobGraph is done and was removed.
+            if resultStatus != 0:
+                logger.warn("Despite the batch system claiming failure the "
+                            "job %s seems to have finished and been removed", issuedJob)
+            self._updatePredecessorStatus(jobNode.jobStoreID)
 
     @staticmethod
     def getSuccessors(jobGraph, alreadySeenSuccessors, jobStore):
