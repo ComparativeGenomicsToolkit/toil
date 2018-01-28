@@ -752,6 +752,9 @@ class Leader(object):
                     logger.warn("No log file is present, despite job failing: %s", jobNode)
                 jobGraph.setupJobAfterFailure(self.config)
                 self.jobStore.update(jobGraph)
+                if self.toilMetrics is not None:
+                    self.toilMetrics.logCompletedJob(jobGraph)
+                    self.toilMetrics.logFailedJob(jobGraph)
             elif jobStoreID in self.toilState.hasFailedSuccessors:
                 # If the job has completed okay, we can remove it from the list of jobs with failed successors
                 self.toilState.hasFailedSuccessors.remove(jobStoreID)
