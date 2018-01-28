@@ -980,7 +980,7 @@ class AWSJobStore(AbstractJobStore):
 
         @classmethod
         def maxInlinedSize(cls, encrypted):
-            return 1024
+            return 256
 
         def _maxInlinedSize(self):
             return self.maxInlinedSize(self.encrypted)
