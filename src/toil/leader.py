@@ -757,10 +757,10 @@ class Leader(object):
             #jobGraph is done we can add it to the list of updated jobGraph files
             logger.debug("Added job: %s to active jobs", jobGraph)
         except NoSuchJobException:
-            # The jobGraph is done and was removed.
+            # The job is done and was removed.
             if resultStatus != 0:
                 logger.warn("Despite the batch system claiming failure the "
-                            "job %s seems to have finished and been removed", issuedJob)
+                            "job %s seems to have finished and been removed", jobNode)
             self._updatePredecessorStatus(jobNode.jobStoreID)
 
     @staticmethod
