@@ -201,7 +201,7 @@ logDir = '--log_dir=/var/lib/mesos'
 leaderArgs = logDir + ' --registry=in_memory --cluster={name}'
 # --no-systemd_enable_support is necessary in Ubuntu 16.04 (otherwise,
 # Mesos attempts to contact systemd but can't find its run file)
-workerArgs = '{keyPath} --work_dir=/var/lib/mesos --master={ip}:5050 --attributes=preemptable:{preemptable} --no-systemd_enable_support ' + logDir
+workerArgs = '{keyPath} --work_dir=/var/lib/mesos --master={ip}:5050 --attributes=preemptable:{preemptable} --no-hostname_lookup --no-systemd_enable_support ' + logDir
 
 awsUserData = """#cloud-config
 
