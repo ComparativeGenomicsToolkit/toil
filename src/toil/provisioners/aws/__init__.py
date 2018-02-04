@@ -316,10 +316,10 @@ coreos:
             -v /:/rootfs \
             --name node-exporter \
             --restart always \
-            prom/node-exporter:0.12.0 \
-            -collector.procfs /host/proc \
-            -collector.sysfs /host/sys \
-            -collector.filesystem.ignored-mount-points ^/(sys|proc|dev|host|etc)($|/)
+            prom/node-exporter:v0.15.2 \
+            --collector.procfs /host/proc \
+            --collector.sysfs /host/sys \
+            --collector.filesystem.ignored-mount-points ^/(sys|proc|dev|host|etc)($|/)
 
 {sshKeyStanza}
 """
