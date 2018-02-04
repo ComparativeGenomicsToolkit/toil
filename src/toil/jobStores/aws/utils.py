@@ -379,6 +379,8 @@ def retryable_s3_errors(e):
             or (isinstance(e, BotoServerError) and e.status == 500)
             # Throttling response sometimes received on bucket creation
             or (isinstance(e, BotoServerError) and e.status == 503 and e.code == 'SlowDown')
+            # S3 started returning 200 "errors" recently.
+            or (isinstance(e, S3ResponseError) and e.status == 200 and e.code == 'SlowDown')
             or (isinstance(e, S3CopyError) and 'try again' in e.message))
 
 
