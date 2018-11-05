@@ -496,6 +496,8 @@ class Leader(object):
                 if self.toilMetrics:
                     self.toilMetrics.logCompletedJob(updatedJob)
             else:
+                if self.toilMetrics:
+                    self.toilMetrics.logCompletedJob(updatedJob)
                 logger.warn('Job failed with exit value %i: %s',
                             result, updatedJob)
             self.processFinishedJob(jobID, result, wallTime=wallTime)
