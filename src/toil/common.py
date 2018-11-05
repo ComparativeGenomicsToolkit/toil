@@ -1188,7 +1188,7 @@ class ToilMetrics:
                     pass
                 subprocess.check_call(["docker", "run",
                                        "--name", "toil_grafana",
-                                       "-d", "-p=3000:3000",
+                                       "-d", "--net=host",
                                        self.grafanaImage])
         except subprocess.CalledProcessError:
             logger.warn("Could not start prometheus/grafana dashboard.")
