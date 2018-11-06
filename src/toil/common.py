@@ -1205,7 +1205,7 @@ class ToilMetrics:
                 with attempt:
                     requests.post('http://localhost:3000/api/datasources', auth=('admin', 'admin'),
                                   data='{"name":"DS_PROMETHEUS","type":"prometheus", \
-                                  "url":"http://localhost:9090", "access":"direct"}',
+                                  "url":"http://localhost:9090", "access":"proxy"}',
                                   headers={'content-type': 'application/json', "access": "direct"})
         except requests.exceptions.ConnectionError:
             logger.debug(
